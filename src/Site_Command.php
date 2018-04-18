@@ -30,6 +30,7 @@ class Site_Command extends EE_Command {
 	private $logger;
 	private $le;
 	private $db_pass;
+	private $mysql;
 
 	public function __construct() {
 		$this->level = 0;
@@ -78,6 +79,15 @@ class Site_Command extends EE_Command {
 	 *
 	 * [--email=<email>]
 	 * : E-Mail of the administrator.
+	 * 
+	 * [--host]
+	 * : MySQL on Host (apt package).
+	 * 
+	 * [--global]
+	 * : Single MySQL instance on docker container for all sites.
+	 * 
+	 * [--local]
+	 * : MySQL on docker container per site sites.
 	 */
 	public function create( $args, $assoc_args ) {
 		\EE\Utils\delem_log( 'site create start' );
@@ -98,6 +108,8 @@ class Site_Command extends EE_Command {
 		$this->db_pass    = \EE\Utils\random_password();
 		$this->site_email = ! empty( $assoc_args['email'] ) ? $assoc_args['email'] : strtolower( 'mail@' . $this->site_name );
 		$this->le         = ! empty( $assoc_args['letsencrypt'] ) ? true : false;
+
+		$this->mysql = \EE\Utils\get_type( $assoc_args, [ 'host', 'global', 'local' ], 'local' );
 
 		$this->init_checks();
 		if ( 'none' !== $this->cache_type ) {
@@ -213,6 +225,9 @@ class Site_Command extends EE_Command {
 				}
 			}
 		}
+		if('global'===$this->mysql){
+			$this->docker::boot_container( 'db' );
+		}
 	}
 
 	/**
@@ -248,14 +263,17 @@ class Site_Command extends EE_Command {
 		$filter = array();
 		( ! $this->le ) ?: $filter[] = 'le';
 		$filter[]               = $this->site_type;
+		$filter[]               = $this->mysql;
 		$docker_compose_content = $this->docker::generate_docker_composer_yml( $filter );
 
 		try {
 			if ( ! ( \EE\Utils\copy_recursive( $default_conf, $site_conf_dir )
-				&& file_put_contents( $site_docker_yml, $docker_compose_content )
-				&& rename( "$site_conf_dir/.env.example", $site_conf_env ) ) ) {
+				&& file_put_contents( $site_docker_yml, $docker_compose_content ) ) ) {
 				throw new Exception( 'Could not copy configuration files.' );
 			}
+
+			rename( "$site_conf_dir/.env.$this->mysql", $site_conf_env );
+
 			if ( 'wpsubdir' !== $this->site_type ) {
 				$ee_conf = ( 'ee4_redis' === $this->cache_type ) ? 'wpredis' : 'wp';
 			} else {
@@ -270,7 +288,7 @@ class Site_Command extends EE_Command {
 			$server_name = ( 'wpsubdom' === $this->site_type ) ? "$this->site_name *.$this->site_name" : $this->site_name;
 			EE::log( 'Updating configuration files...' );
 			EE::success( 'Configuration files updated.' );
-			if ( ! ( file_put_contents( $site_conf_env, str_replace( [ '{V_HOST}', 'password' ], [ $this->site_name, $this->db_pass ], file_get_contents( $site_conf_env ) ) )
+			if ( ! ( file_put_contents( $site_conf_env, str_replace( [ '{V_HOST}','{DB_NAME}', 'password' ], [ $this->site_name,\EE\Utils\random_password(), $this->db_pass ], file_get_contents( $site_conf_env ) ) )
 				&& ( file_put_contents( $site_nginx_default_conf, str_replace( '{V_HOST}', $server_name, file_get_contents( $site_nginx_default_conf ) ) ) ) ) ) {
 				throw new Exception( 'Could not modify configuration files.' );
 			}
@@ -317,6 +335,10 @@ class Site_Command extends EE_Command {
 	private function create_site() {
 
 		$this->setup_site_network();
+        if('host'===$this->mysql){
+			$ip = exec("docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' $this->site_name");
+			file_put_contents( "$this->site_root/.env", str_replace( '{localhost}', $ip, file_get_contents( "$this->site_root/.env" ) ) );
+		}
 		$this->level = 3;
 		try {
 			if ( ! $this->docker::docker_compose_up( $this->site_root ) ) {
@@ -452,6 +474,15 @@ class Site_Command extends EE_Command {
 			} else {
 				throw new Exception( "There was some error connecting to $this->proxy_type." );
 			}
+
+			if('global'===$this->mysql){
+				if ( $this->docker::connect_network( $this->site_name, 'db' ) ) {
+					EE::success( "Site connected to db." );
+				} else {
+					throw new Exception( "There was some error connecting to db." );
+				}
+			}
+
 			if ( 'none' !== $this->cache_type ) {
 				if ( $this->docker::connect_network( $this->site_name, $this->cache_type ) ) {
 					EE::success( "Site connected to $this->cache_type." );
@@ -562,11 +593,11 @@ class Site_Command extends EE_Command {
 	 * @param Exception $e
 	 */
 	private function catch_clean( $e ) {
-		\EE\Utils\delem_log( 'site cleanup start' );
+		/*\EE\Utils\delem_log( 'site cleanup start' );
 		EE::warning( $e->getMessage() );
 		EE::warning( 'Initiating clean-up...' );
 		$this->delete_site();
-		\EE\Utils\delem_log( 'site cleanup end' );
+		\EE\Utils\delem_log( 'site cleanup end' );*/
 		exit;
 	}
 
