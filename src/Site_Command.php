@@ -30,6 +30,7 @@ class Site_Command extends EE_Command {
 	private $logger;
 	private $le;
 	private $db_pass;
+	private $batcache;
 
 	public function __construct() {
 		$this->level = 0;
@@ -57,6 +58,9 @@ class Site_Command extends EE_Command {
 	 *
 	 * [--wpredis]
 	 * : Use redis for WordPress.
+	 * 
+	 * [--batcache]
+	 * : Batcache for wordpress.
 	 *
 	 * [--wpsubdir]
 	 * : WordPress sub-dir Multi-site.
@@ -98,6 +102,7 @@ class Site_Command extends EE_Command {
 		$this->db_pass    = \EE\Utils\random_password();
 		$this->site_email = \EE\Utils\get_flag_value( $assoc_args, 'email', strtolower( 'mail@' . $this->site_name ) );
 		$this->le         = ! empty( $assoc_args['letsencrypt'] ) ? true : false;
+		$this->batcache   = ! empty( $assoc_args['batcache'] ) ? true : false;
 
 		$this->init_checks();
 		if ( 'none' !== $this->cache_type ) {
@@ -313,6 +318,7 @@ class Site_Command extends EE_Command {
 		EE::log( 'Copying configuration files...' );
 		$filter = array();
 		( ! $this->le ) ?: $filter[] = 'le';
+		( ! $this->batcache ) ?: $filter[] = 'batcache';
 		$filter[]               = $this->site_type;
 		$docker_compose_content = $this->docker::generate_docker_composer_yml( $filter );
 
@@ -573,6 +579,15 @@ class Site_Command extends EE_Command {
 
 		EE::success( "http://" . $this->site_name . " has been created successfully!" );
 		$this->info();
+
+		if( $this->batcache ) {
+			$batcache_txt = '// ** Batcache settings ** //
+			define(\'WP_CACHE\', true);
+			global $memcached_servers;
+			$memcached_servers = array( \'default\' => array(\'memcached:11211\'));';
+			$myfile = file_put_contents("$this->site_root/app/src/wp-config.php", $batcache_txt.PHP_EOL, FILE_APPEND | LOCK_EX);
+		}
+		
 	}
 
 	/**
@@ -604,6 +619,17 @@ class Site_Command extends EE_Command {
 		catch ( Exception $e ) {
 			$this->catch_clean( $e );
 		}
+
+		if( $this->batcache ) {
+			EE::runcommand( "wp $this->site_name plugin install batcache", array( 'activate' => true ) );
+
+				//chdir("$this->site_root/app/src/wp-content");
+				file_put_contents( 'object-cache.php', file_get_contents( 'http://svn.wp-plugins.org/memcached/trunk/object-cache.php' ) );
+				file_put_contents( 'advanced-cache.php',file_get_contents( 'https://raw.githubusercontent.com/Automattic/batcache/master/advanced-cache.php' ) );
+				rename(getcwd().'/object-cache.php',"$this->site_root/app/src/wp-content/object-cache.php");
+				rename(getcwd().'/advanced-cache.php',"$this->site_root/app/src/wp-content/advanced-cache.php");
+		}
+
 	}
 
 	/**
