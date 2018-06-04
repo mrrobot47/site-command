@@ -157,7 +157,7 @@ class Site_Command extends EE_Command {
 		EE::log( "List of $type Sites:\n" );
 		foreach ( $sites as $site ) {
 			if ( 2 === $check || $check === $site['is_enabled'] ) {
-				EE::log( ' - ' . $site['sitename'] );
+				EE::log( $site['sitename'] );
 				$count ++;
 			}
 		}
@@ -188,11 +188,13 @@ class Site_Command extends EE_Command {
 	 *
 	 * ## OPTIONS
 	 *
-	 * <site-name>
+	 * [<site-name>]
 	 * : Name of website to be enabled.
 	 */
 	public function enable( $args ) {
 		\EE\Utils\delem_log( 'site enable start' );
+		$args = \EE\Utils\set_site_arg($args,'site enable');
+
 		$this->populate_site_info( $args );
 		EE::log( "Enabling site $this->site_name..." );
 		if ( $this->docker::docker_compose_up( $this->site_root ) ) {
@@ -209,10 +211,11 @@ class Site_Command extends EE_Command {
 	 *
 	 * ## OPTIONS
 	 *
-	 * <site-name>
+	 * [<site-name>]
 	 * : Name of website to be disabled.
 	 */
 	public function disable( $args ) {
+		$args = \EE\Utils\set_site_arg($args,'site disable');
 		\EE\Utils\delem_log( 'site disable start' );
 		$this->populate_site_info( $args );
 		EE::log( "Disabling site $this->site_name..." );
@@ -228,12 +231,12 @@ class Site_Command extends EE_Command {
 	/**
 	 * Display all the relevant site information, credentials and useful links.
 	 *
-	 * <site-name>
+	 * [<site-name>]
 	 * : Name of the website whose info is required.
 	 */
 	public function info( $args = '' ) {
 		\EE\Utils\delem_log( 'site info start' );
-
+		$args = \EE\Utils\set_site_arg($args,'site info');
 		if ( ! isset( $this->site_name ) ) {
 			$this->populate_site_info( $args );
 		}
@@ -386,7 +389,7 @@ class Site_Command extends EE_Command {
 			$this->site_status_check();
 			$this->install_wp();
 		}
-		$this->info();
+		$this->info( array($this->site_name) );
 		$this->create_site_db_entry();
 	}
 
