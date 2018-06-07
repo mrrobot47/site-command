@@ -9,7 +9,8 @@
     "prefer-stable": true,
     "autoload": {
         "psr-4": {
-            "": "src/"
+            "": "src/",
+            "mustache\\": "templates/"
         },
         "files": [ "site-command.php" ]
     },

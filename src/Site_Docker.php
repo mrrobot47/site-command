@@ -1,6 +1,6 @@
 <?php
 
-use function \EE\Utils\mustache_render;
+//use function \EE\Utils\mustache_render;
 
 class Site_Docker {
 
@@ -146,9 +146,33 @@ class Site_Docker {
 			'services' => $base,
 			'network'  => true,
 		);
-
-		$docker_compose_yml = mustache_render( 'vendor/easyengine/site-command/templates/docker-compose.mustache', $binding );
+		$docker_compose_yml = $this->mustache_render( __DIR__.'/../templates/docker-compose.mustache', $binding );
 
 		return $docker_compose_yml;
+	}
+
+	/**
+	 * Render PHP or other types of files using Mustache templates.
+	 *
+	 * IMPORTANT: Automatic HTML escaping is disabled!
+	 */
+	function mustache_render( $template_name, $data = array() ) {
+		// if ( ! file_exists( EE_ROOT . "/vendor/easyengine/site-command/templates" ) ) {
+			
+		// 	$template_name = 'lalalalalalalala';
+		// }
+
+		// EE::error($template_name);
+
+		$template = file_get_contents( $template_name );
+
+		$m = new \Mustache_Engine(
+			array(
+				'escape' => function ( $val ) {
+					return $val; },
+			)
+		);
+
+		return $m->render( $template, $data );
 	}
 }
