@@ -10,7 +10,7 @@
     "autoload": {
         "psr-4": {
             "": "src/",
-            "mustache\\": "templates/"
+            "": "templates/"
         },
         "files": [ "site-command.php" ]
     },
