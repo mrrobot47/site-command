@@ -258,6 +258,179 @@ class Site_Command extends EE_Command {
 	}
 
 	/**
+	 * Starts containers associated with site.
+	 *
+	 * <site-name>
+	 * : Name of the site.
+	 *
+	 * [--all]
+	 * : Start all containers of site.
+	 *
+	 * [--nginx]
+	 * : Start nginx container of site.
+	 *
+	 * [--php]
+	 * : Start php container of site.
+	 *
+	 * [--mysql]
+	 * : Start mysql container of site.
+	 *
+	 * [--redis]
+	 * : Start redis container of site.
+	 *
+	 * [--mailcatcher]
+	 * : Start mailcatcher container of site.
+	 *
+	 * [--phpmyadmin]
+	 * : Start phpmyadmin container of site.
+	 */
+	public function start( $args, $assoc_args ) {
+		$this->site_docker_compose_execute( $args[0], 'start', $args, $assoc_args);
+	}
+
+	/**
+	 * Stops containers associated with site.
+	 *
+	 * <site-name>
+	 * : Name of the site.
+	 *
+	 * [--all]
+	 * : Stop all containers of site.
+	 *
+	 * [--nginx]
+	 * : Stop nginx container of site.
+	 *
+	 * [--php]
+	 * : Stop php container of site.
+	 *
+	 * [--mysql]
+	 * : Stop mysql container of site.
+	 *
+	 * [--redis]
+	 * : Stop redis container of site.
+	 *
+	 * [--mailcatcher]
+	 * : Stop mailcatcher container of site.
+	 *
+	 * [--phpmyadmin]
+	 * : Stop phpmyadmin container of site.
+	 */
+	public function stop( $args, $assoc_args ) {
+		$this->site_docker_compose_execute( $args[0], 'stop', $args, $assoc_args);
+	}
+
+	/**
+	 * Restarts containers associated with site.
+	 *
+	 * <site-name>
+	 * : Name of the site.
+	 *
+	 * [--all]
+	 * : Restart all containers of site.
+	 *
+	 * [--nginx]
+	 * : Restart nginx container of site.
+	 *
+	 * [--php]
+	 * : Restart php container of site.
+	 *
+	 * [--mysql]
+	 * : Restart mysql container of site.
+	 *
+	 * [--redis]
+	 * : Restart redis container of site.
+	 *
+	 * [--mailcatcher]
+	 * : Restart mailcatcher container of site.
+	 *
+	 * [--phpmyadmin]
+	 * : Restart phpmyadmin container of site.
+	 */
+	public function restart( $args, $assoc_args ) {
+		$this->site_docker_compose_execute( $args[0], 'restart', $args, $assoc_args);
+	}
+
+	/**
+	 * Reload services in containers without restarting container(s) associated with site.
+	 *
+	 * <site-name>
+	 * : Name of the site.
+	 *
+	 * [--all]
+	 * : Reload all services of site(which are supported).
+	 *
+	 * [--nginx]
+	 * : Reload nginx service in container.
+	 *
+	 * [--php]
+	 * : Start php service in container.
+	 */
+	public function reload( $args, $assoc_args ) {
+		$all         = \EE\Utils\get_flag_value( $assoc_args, 'all' );
+		$nginx       = \EE\Utils\get_flag_value( $assoc_args, 'nginx' );
+		$php         = \EE\Utils\get_flag_value( $assoc_args, 'php' );
+
+		$no_service_specified = !( $all || $nginx || $php || $mysql || $redis || $mailcatcher );
+
+		$this->populate_site_info( $args );
+
+		chdir( $this->site_root );
+
+		if( $all || $no_service_specified ) {
+			shell_exec( "docker-compose exec nginx sh -c 'nginx -t && service openresty reload'" );
+			shell_exec( "docker-compose exec php kill -USR2 1" );
+		}
+		else {
+			if ($nginx) {
+				shell_exec( "docker-compose exec nginx sh -c 'nginx -t && service openresty reload'" );
+			}
+			if ($php) {
+				shell_exec( "docker-compose exec php kill -USR2 1" );
+			}
+		}
+	}
+
+	private function site_docker_compose_execute( $site, $action, $args, $assoc_args ) {
+		$all         = \EE\Utils\get_flag_value( $assoc_args, 'all' );
+		$nginx       = \EE\Utils\get_flag_value( $assoc_args, 'nginx' );
+		$php         = \EE\Utils\get_flag_value( $assoc_args, 'php' );
+		$mysql       = \EE\Utils\get_flag_value( $assoc_args, 'mysql' );
+		$redis       = \EE\Utils\get_flag_value( $assoc_args, 'redis' );
+		$mailcatcher = \EE\Utils\get_flag_value( $assoc_args, 'mailcatcher' );
+		$phpmyadmin  = \EE\Utils\get_flag_value( $assoc_args, 'phpmyadmin' );
+
+		$no_service_specified = !( $all || $nginx || $php || $mysql || $redis || $mailcatcher );
+
+		$this->populate_site_info( $args );
+
+		chdir( $this->site_root );
+
+		if( $all || $no_service_specified ) {
+			shell_exec( "docker-compose $action" );
+		}
+		else {
+			if ($nginx) {
+				shell_exec( "docker-compose $action nginx" );
+			}
+			if ($php) {
+				shell_exec( "docker-compose $action php" );
+			}
+			if ($mysql) {
+				shell_exec( "docker-compose $action db" );
+			}
+			if ($redis) {
+				shell_exec( "docker-compose $action redis" );
+			}
+			if ($mailcatcher) {
+				shell_exec( "docker-compose $action mail" );
+			}
+			if ($phpmyadmin) {
+				shell_exec( "docker-compose $action phpmyadmin" );
+			}
+		}
+	}
+
+	/**
 	 * Function to check all the required configurations needed to create the site.
 	 *
 	 * Boots up the container if it is stopped or not running.
