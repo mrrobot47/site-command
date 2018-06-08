@@ -1,6 +1,7 @@
 <?php
 
-//use function \EE\Utils\mustache_render;
+use function \EE\Utils\mustache_render;
+use Yosymfony\Toml\TomlBuilder;
 
 class Site_Docker {
 
@@ -146,33 +147,40 @@ class Site_Docker {
 			'services' => $base,
 			'network'  => true,
 		);
-		$docker_compose_yml = $this->mustache_render( __DIR__.'/../templates/docker-compose.mustache', $binding );
+
+		$docker_compose_yml = mustache_render( EE_ROOT . '/vendor/easyengine/site-command/templates/docker-compose.mustache', $binding );
 
 		return $docker_compose_yml;
 	}
 
-	/**
-	 * Render PHP or other types of files using Mustache templates.
-	 *
-	 * IMPORTANT: Automatic HTML escaping is disabled!
-	 */
-	function mustache_render( $template_name, $data = array() ) {
-		// if ( ! file_exists( EE_ROOT . "/vendor/easyengine/site-command/templates" ) ) {
-			
-		// 	$template_name = 'lalalalalalalala';
-		// }
+	public function generate_traefik_toml() {
+		$tb     = new TomlBuilder();
+		$result = $tb->addComment( 'Traefik Configuration' )
+			->addValue( 'defaultEntryPoints', array( 'http', 'https' ) )
+			->addValue( 'InsecureSkipVerify', true )
+			->addValue( 'logLevel', 'DEBUG' )
+			->addTable( 'entryPoints' )
+			->addTable( 'entryPoints.traefik' )
+			->addValue( 'address', ':8080' )
+			->addTable( 'entryPoints.traefik.auth.basic' )
+			->addValue( 'users', array( 'easyengine:$apr1$CSR8Nxt6$h/Mid6X/vb6ozs4lrXrcw1' ) )
+			->addTable( 'entryPoints.http' )
+			->addValue( 'address', ':80' )
+			->addTable( 'entryPoints.https' )
+			->addValue( 'address', ':443' )
+			->addTable( 'api' )
+			->addValue( 'entryPoint', 'traefik' )
+			->addValue( 'dashboard', true )
+			->addValue( 'debug', true )
+			->addTable( 'docker' )
+			->addValue( 'domain', 'docker.local' )
+			->addValue( 'watch', true )
+			->addValue( 'exposedByDefault', false )
+			->addTable( 'file' )
+			->addValue( 'directory', '/etc/traefik/endpoints/' )
+			->addValue( 'watch', true )
+			->getTomlString();
 
-		// EE::error($template_name);
-
-		$template = file_get_contents( $template_name );
-
-		$m = new \Mustache_Engine(
-			array(
-				'escape' => function ( $val ) {
-					return $val; },
-			)
-		);
-
-		return $m->render( $template, $data );
+		return $result;
 	}
 }

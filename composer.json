@@ -9,8 +9,7 @@
     "prefer-stable": true,
     "autoload": {
         "psr-4": {
-            "": "src/",
-            "": "templates/"
+            "": "src/"
         },
         "files": [ "site-command.php" ]
     },

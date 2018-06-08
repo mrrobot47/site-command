@@ -77,9 +77,6 @@ class Site_Command extends EE_Command {
 	 * [--email=<email>]
 	 * : E-Mail of the administrator.
 	 *
-	 * [--letsencrypt]
-	 * : Enable letsencrypt on the site.
-	 *
 	 * [--skip-install]
 	 * : Skips wp-core install.
 	 */
@@ -242,10 +239,10 @@ class Site_Command extends EE_Command {
 			$this->populate_site_info( $args );
 		}
 		EE::log( "Details for site $this->site_name:" );
-		$prefix = ($this->le) ? 'https://' : 'http://';
-		$info = array(
-			array( 'Access phpMyAdmin', $prefix.$this->site_name.'/ee-admin/pma/' ),
-			array( 'Access mail', $prefix.$this->site_name.'/ee-admin/mailhog/' ),
+		$prefix = ( $this->le ) ? 'https://' : 'http://';
+		$info   = array(
+			array( 'Access phpMyAdmin', $prefix . $this->site_name . '/ee-admin/pma/' ),
+			array( 'Access mail', $prefix . $this->site_name . '/ee-admin/mailhog/' ),
 			array( 'Site Title', $this->site_title ),
 			array( 'DB Password', $this->db_pass ),
 			array( 'E-Mail', $this->site_email ),
@@ -279,8 +276,21 @@ class Site_Command extends EE_Command {
 			if ( ! ( $port_80_exit_status && $port_443_exit_status ) ) {
 				EE::error( 'Cannot create/start proxy container. Please make sure port 80 and 443 are free.' );
 			} else {
+
+				if ( ! is_dir( EE_CONF_ROOT . '/traefik' ) ) {
+					EE::debug( 'Creating traefik folder and config files.' );
+					mkdir( EE_CONF_ROOT . '/traefik' );
+				}
+
+				touch( EE_CONF_ROOT . '/traefik/acme.json' );
+				chmod( EE_CONF_ROOT . '/traefik/acme.json', 600 );
+				$traefik_toml = new Site_Docker();
+				EE::error( $traefik_toml->generate_traefik_toml() );
+				file_put_contents( EE_CONF_ROOT . '/traefik/traefik.toml', $traefik_toml->generate_traefik_toml() );
+
 				$HOME                = HOME;
-				$ee4_traefik_command = "docker run -d -p 8080:8080 -p 80:80 -p 443:443 -v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.ee4/traefik/traefik.toml:/etc/traefik/traefik.toml -v $HOME/.ee4/traefik/acme.json:/etc/traefik/acme.json --name $this->proxy_type traefik --logLevel=DEBUG";
+				$ee4_traefik_command = 'docker run -d -p 80:80 -p 443:443 -l "traefik.port=8080" -l "traefik.enable=true" -l "traefik.protocol=http" -l "traefik.frontend.entryPoints=http" -l "traefik.frontend.rule=Host:traefik.local" -v /var/run/docker.sock:/var/run/docker.sock -v ' . $HOME . '/.ee4/traefik/traefik.toml:/etc/traefik/traefik.toml -v ' . $HOME . '/.ee4/traefik/acme.json:/etc/traefik/acme.json -v ' . $HOME . '/.ee4/traefik/endpoints:/etc/traefik/endpoints -v ' . $HOME . '/.ee4/traefik/certs:/etc/traefik/certs -v ' . $HOME . '/.ee4/traefik/log:/var/log --name ee4_traefik easyengine/traefik';
+
 				if ( $this->docker::boot_container( $this->proxy_type, $ee4_traefik_command ) ) {
 					EE::success( "$this->proxy_type container is up." );
 				} else {
@@ -395,7 +405,7 @@ class Site_Command extends EE_Command {
 			$this->site_status_check();
 			$this->install_wp();
 		}
-		$this->info( array($this->site_name) );
+		$this->info( array( $this->site_name ) );
 		$this->create_site_db_entry();
 	}
 
@@ -548,7 +558,7 @@ class Site_Command extends EE_Command {
 			EE::debug( 'STDOUT: ' . shell_exec( $multi_type_command ) );
 		}
 
-		$prefix = ($this->le) ? 'https://' : 'http://';
+		$prefix = ( $this->le ) ? 'https://' : 'http://';
 		EE::success( $prefix . $this->site_name . " has been created successfully!" );
 	}
 
@@ -622,7 +632,7 @@ class Site_Command extends EE_Command {
 		\EE\Utils\delem_log( 'site cleanup start' );
 		EE::warning( $e->getMessage() );
 		EE::warning( 'Initiating clean-up...' );
-		//$this->delete_site();
+		$this->delete_site();
 		\EE\Utils\delem_log( 'site cleanup end' );
 		exit;
 	}
