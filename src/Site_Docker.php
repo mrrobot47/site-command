@@ -49,7 +49,9 @@ class Site_Docker {
 		// PHP configuration.
 		$php['service_name'] = array( 'name' => 'php' );
 		$php['image']        = array( 'name' => 'easyengine/php' );
-		$php['depends_on']   = array( 'name' => 'db' );
+		if ( in_array( 'db', $filters, true ) ) {
+			$php['depends_on']   = array( 'name' => 'db' );
+		}
 		$php['restart']      = $restart_default;
 		$php['volumes']      = array(
 			'vol' => array(
@@ -60,8 +62,9 @@ class Site_Docker {
 		$php['environment']  = array(
 			'env' => array(
 				array( 'name' => 'WORDPRESS_DB_HOST' ),
-				array( 'name' => 'WORDPRESS_DB_USER=${MYSQL_USER}' ),
-				array( 'name' => 'WORDPRESS_DB_PASSWORD=${MYSQL_PASSWORD}' ),
+				array( 'name' => 'WORDPRESS_DB_NAME' ),
+				array( 'name' => 'WORDPRESS_DB_USER' ),
+				array( 'name' => 'WORDPRESS_DB_PASSWORD' ),
 				array( 'name' => 'USER_ID=${USER_ID}' ),
 				array( 'name' => 'GROUP_ID=${GROUP_ID}' ),
 			),
@@ -142,8 +145,11 @@ class Site_Docker {
 		if ( in_array( 'wpredis', $filters, true ) ) {
 			$base[] = $redis;
 		}
-
-		$base[] = $db;
+		
+		if ( in_array( 'db', $filters, true ) ) {
+			$base[] = $db;
+		}
+		
 		$base[] = $php;
 		$base[] = $nginx;
 		$base[] = $mail;

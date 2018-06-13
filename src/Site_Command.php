@@ -31,6 +31,7 @@ class Site_Command extends EE_Command {
 	private $db_user;
 	private $db_root_pass;
 	private $db_pass;
+	private $db_host;
 	private $locale;
 	private $skip_install;
 
@@ -90,6 +91,15 @@ class Site_Command extends EE_Command {
 	 * ---
 	 *  default: wordpress
 	 * ---
+	 * 
+	 * [--dbpass=<dbpass>]
+	 * : Set the database password.
+	 * 
+	 * [--dbhost=<dbhost>]
+	 * : Set the database host. Pass value only when remote dbhost is required.
+	 * ---
+	 * default: db
+	 * ---
 	 *
 	 * [--dbprefix=<dbprefix>]
 	 * : Set the database table prefix.
@@ -140,6 +150,7 @@ class Site_Command extends EE_Command {
 		$this->db_name    = str_replace( '-', '_', str_replace( '.', '_', $this->site_name ) );
 		$this->db_user    = \EE\Utils\get_flag_value( $assoc_args, 'dbuser', 'wordpress' );
 		$this->db_pass    = \EE\Utils\get_flag_value( $assoc_args, 'dbpass', \EE\Utils\random_password() );
+		$this->db_host    = \EE\Utils\get_flag_value( $assoc_args, 'dbhost' );
 		$this->locale     = \EE\Utils\get_flag_value( $assoc_args, 'locale', EE::get_config( 'locale' ) );
 
 		$this->db_root_pass = \EE\Utils\random_password();
@@ -373,16 +384,22 @@ class Site_Command extends EE_Command {
 		$filter[]               = $this->site_type;
 		$filter[]               = $this->cache_type;
 		$filter[]               = $this->le;
+		$filter[]               = $this->db_host;
 		$site_docker            = new Site_Docker();
 		$docker_compose_content = $site_docker->generate_docker_compose_yml( $filter );
 		$default_conf_content   = $this->generate_default_conf( $this->site_type, $this->cache_type, $server_name );
+		$remote = ( 'db' === $this->db_host ) ? true : false;
 		$env_data               = [
+			'remote'        => $remote,
 			'virtual_host'  => $this->site_name,
 			'root_password' => $this->db_root_pass,
 			'database_name' => $this->db_name,
-			'database_user' => 'wordpress',
+			'database_user' => $this->db_user,
 			'user_password' => $this->db_pass,
-			'wp_db_host'    => 'db',
+			'wp_db_host'    => $this->db_host,
+			'wp_db_user'    => $this->db_user,
+			'wp_db_name'    => $this->db_name,
+			'wp_db_pass'    => $this->db_pass,
 			'user_id'       => $process_user['uid'],
 			'group_id'      => $process_user['gid'],
 		];
@@ -526,6 +543,14 @@ class Site_Command extends EE_Command {
 			}
 			EE::log( "[$this->site_name] site root removed." );
 		}
+		if ( 'db' !== $this->db_host ) {
+			$delete_db_command = 'docker-compose exec php bash -c \'mysql -h$WORDPRESS_DB_HOST -u$WORDPRESS_DB_USER -p$WORDPRESS_DB_PASSWORD -e "DROP DATABASE $WORDPRESS_DB_NAME;"\'';
+			if ( \EE\Utils\default_exec( $delete_db_command ) ) {
+				EE::log( 'Database deleted.' );
+			} else {
+				EE::error( 'Could not remove the database.' );
+			}
+		}
 		if ( $this->level > 4 ) {
 			if ( $this->db::delete( array( 'sitename' => $this->site_name ) ) ) {
 				EE::log( 'Removing database entry.' );
@@ -627,16 +652,29 @@ class Site_Command extends EE_Command {
 		EE::log( 'Downloading and configuring WordPress.' );
 
 		$chown_command = "docker-compose exec php chown -R www-data: /var/www/";
-		EE::debug( 'COMMAND: ' . $chown_command );
-		EE::debug( 'STDOUT: ' . shell_exec( $chown_command ) );
+		\EE\Utils\default_exec( $chown_command );
 
 		$core_download_command = "docker-compose exec --user='www-data' php wp core download --locale='" . $this->locale . "' " . $core_download_arguments;
-		EE::debug( 'COMMAND: ' . $core_download_command );
-		EE::debug( 'STDOUT: ' . shell_exec( $core_download_command ) );
+		\EE\Utils\default_exec( $core_download_command );
 
-		$wp_config_create_command = "docker-compose exec --user='www-data' php wp config create --dbuser='" . $this->db_user . "' --dbname='" . $this->db_name . "' --dbpass='" . $this->db_pass . "' --dbhost='db' " . $config_arguments;
-		EE::debug( 'COMMAND: ' . $wp_config_create_command );
-		EE::debug( 'STDOUT: ' . shell_exec( $wp_config_create_command ) );
+		$wp_config_create_command = "docker-compose exec --user='www-data' php wp config create --dbuser='" . $this->db_user . "' --dbname='" . $this->db_name . "' --dbpass='" . $this->db_pass . "' --dbhost='" . $this->db_host . "' " . $config_arguments;
+		
+		try{
+			if ( ! \EE\Utils\default_exec( $wp_config_create_command ) ) {
+				throw new Exception( "Could'nt connect to $this->db_host or there was issue in `wp config create`. Please check logs." );
+			}
+
+			if( 'db' !== $this->db_host ) {
+				$create_db_command = 'docker-compose exec php bash -c \'mysql -h$WORDPRESS_DB_HOST -u$WORDPRESS_DB_USER -p$WORDPRESS_DB_PASSWORD -e "CREATE DATABASE $WORDPRESS_DB_NAME;"\'';
+
+				if ( ! \EE\Utils\default_exec( $create_db_command ) ) {
+					throw new Exception( "Database: $this->db_name already exists. Please back it up and delete it to continue." );
+				}
+			}
+		}
+		catch ( Exception $e ) {
+			$this->catch_clean( $e );
+		}
 
 	}
 
@@ -694,6 +732,7 @@ class Site_Command extends EE_Command {
 			'site_path'        => $this->site_root,
 			'db_name'          => $this->db_name,
 			'db_user'          => $this->db_user,
+			'db_host'          => $this->db_host,
 			'db_password'      => $this->db_pass,
 			'db_root_password' => $this->db_root_pass,
 			'email'            => $this->site_email,
@@ -737,6 +776,7 @@ class Site_Command extends EE_Command {
 			$this->site_root    = $db_select[0]['site_path'];
 			$this->db_user      = $db_select[0]['db_user'];
 			$this->db_name      = $db_select[0]['db_name'];
+			$this->db_host      = $db_select[0]['db_host'];
 			$this->db_pass      = $db_select[0]['db_password'];
 			$this->db_root_pass = $db_select[0]['db_root_password'];
 			$this->site_user    = $db_select[0]['wp_user'];
@@ -757,7 +797,7 @@ class Site_Command extends EE_Command {
 		\EE\Utils\delem_log( 'site cleanup start' );
 		EE::warning( $e->getMessage() );
 		EE::warning( 'Initiating clean-up.' );
-		$this->delete_site();
+		//$this->delete_site();
 		\EE\Utils\delem_log( 'site cleanup end' );
 		exit;
 	}
@@ -768,7 +808,7 @@ class Site_Command extends EE_Command {
 	private function rollback() {
 		EE::warning( 'Exiting gracefully after rolling back. This may take some time.' );
 		if ( $this->level > 0 ) {
-			$this->delete_site();
+			//$this->delete_site();
 		}
 		EE::success( 'Rollback complete. Exiting now.' );
 		exit;
