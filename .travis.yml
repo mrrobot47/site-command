@@ -1,11 +1,10 @@
 sudo: required
 
 language: php
-php: 7.2
+php: 7.1
 
 env:
   global:
-    - PATH="$TRAVIS_BUILD_DIR/../easyengine/vendor/bin:$PATH"
     - TEST_COMMAND="site-command"
 
 before_script:
@@ -20,8 +19,8 @@ before_script:
 
 script:
   - cd "$TRAVIS_BUILD_DIR/../easyengine"
-  - ls -al
-  - ./bin/ee
+  - sudo ls -al
+  - sudo ./bin/ee cli info
   - ./vendor/bin/behat
 
 after_script:
