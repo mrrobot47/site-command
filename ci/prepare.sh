@@ -9,4 +9,4 @@ rm -r features
 cp -R ../$TEST_COMMAND/features .
 rm -r vendor/easyengine/$TEST_COMMAND
 cp -R ../$TEST_COMMAND vendor/easyengine/
-composer update -vvv
+composer update

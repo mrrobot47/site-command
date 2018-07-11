@@ -20,6 +20,8 @@ before_script:
 
 script:
   - cd "$TRAVIS_BUILD_DIR/../easyengine"
+  - ls -al
+  - ./bin/ee
   - ./vendor/bin/behat
 
 after_script:
