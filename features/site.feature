@@ -1,13 +1,5 @@
 Feature: Site Command
 
-  Scenario: ee throws error when run without root
-    Given 'bin/ee' is installed
-    When I run 'bin/ee'
-    Then STDERR should return exactly
-    """
-    Error: Please run `ee` with root privileges.
-    """
-
   Scenario: ee executable is command working correctly
     Given 'bin/ee' is installed
     When I run 'sudo bin/ee'
