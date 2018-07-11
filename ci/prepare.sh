@@ -2,6 +2,11 @@
 
 # called by Travis CI
 
+# Get repo name
+echo $TRAVI_REPO_SLUG
+TEST_COMMAND=$(echo $TRAVI_REPO_SLUG | cut -d/ -f 2)
+echo $TEST_COMMAND
+
 # install dependencies
 wget -qO ee https://rt.cx/ee4beta && sudo bash ee
 rm ee

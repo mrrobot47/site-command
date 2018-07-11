@@ -3,11 +3,10 @@ sudo: required
 language: php
 php: 7.1
 
-env:
-  global:
-    - TEST_COMMAND=$(echo $TRAVI_REPO_SLUG | cut -d/ -f 2)
-
 before_script:
+  - echo $TRAVIS_REPO_SLUG
+  - TEST_COMMAND=$(echo $TRAVIS_REPO_SLUG | cut -d/ -f 2)
+  - echo $TEST_COMMAND
   - |
     # Remove Xdebug for a huge performance increase:
     if [ -f ~/.phpenv/versions/$(phpenv version-name)/etc/conf.d/xdebug.ini ]; then
@@ -15,12 +14,12 @@ before_script:
     else
       echo "xdebug.ini does not exist"
     fi
-  - ./ci/prepare.sh
+  #- ./ci/prepare.sh
 
 script:
-  - cd "$TRAVIS_BUILD_DIR/../easyengine"
-  - sudo ./bin/ee cli info
-  - ./vendor/bin/behat
+  #- cd "$TRAVIS_BUILD_DIR/../easyengine"
+  #- sudo ./bin/ee cli info
+  #- ./vendor/bin/behat
 
 after_script:
   - cat /opt/easyengine/ee.log
