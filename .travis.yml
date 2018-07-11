@@ -4,9 +4,9 @@ language: php
 php: 7.2
 
 env:
-  - TEST_COMMAND="site-command"
   global:
     - PATH="$TRAVIS_BUILD_DIR/../easyengine/vendor/bin:$PATH"
+    - TEST_COMMAND="site-command"
 
 before_script:
   - |
