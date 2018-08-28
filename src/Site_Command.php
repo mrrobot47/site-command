@@ -74,9 +74,9 @@ class Site_Command {
 
 		$last_arg = array_pop( $args );
 		if( substr( $last_arg, 0, 4 ) === 'http' ) {
-			$last_arg = str_replace(['https','http'],'',$last_arg);
+			$last_arg = str_replace(['https://','http://'],'',$last_arg);
 		}
-		$url_path = parse_url(EE\Utils\remove_trailing_slash($last_arg), PHP_URL_PATH);
+		$url_path = EE\Utils\remove_trailing_slash($last_arg);
 
 		$arg_search = Site::find( $url_path,['site_type'] );
 
@@ -87,11 +87,10 @@ class Site_Command {
 		$site_name = EE\SiteUtils\get_site_name();
 		if ( $site_name ) {
 			if( strpos($url_path, '.') !== false ) {
-				array_unshift( $args, 'ee site' );
 				$args[] = $site_name;
 				EE::error(
 					sprintf(
-					'%s is not a valid site-name. Did you mean `%s`?',
+					'%s is not a valid site-name. Did you mean `ee site %s`?',
 					$last_arg,
 					implode(' ',$args)
 					)
