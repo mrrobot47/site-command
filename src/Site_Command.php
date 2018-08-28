@@ -3,7 +3,6 @@
 use EE\Dispatcher\CommandFactory;
 
 use EE\Model\Site;
-
 class Site_Command {
 
 	protected static $site_types = array();
@@ -22,6 +21,10 @@ class Site_Command {
 	}
 
 	public static function add_site_type( $name, $callback ) {
+
+		if( isset( self::$instance->site_types[ $name ] ) ) {
+			EE::warning( sprintf( '%s site-type has already been previously registered by %s. It will be over-written by the new package class %s. Please update your packages to resolve this.', $name, self::$instance->site_types[ $name ], $callback ) );
+		}
 		self::$instance->site_types[ $name ] = $callback;
 	}
 
@@ -35,11 +38,11 @@ class Site_Command {
 
 		if ( isset( $assoc_args['type'] ) ) {
 			$type = $assoc_args['type'];
-			array_unshift( $args, 'site' );
 			unset( $assoc_args['type'] );
 		} else {
-			$type = $this->determine_type( $args );
+			$type = $this->determine_type($args);
 		}
+		array_unshift( $args, 'site' );
 
 		if ( ! isset( $site_types[ $type ] ) ) {
 			$error = sprintf(
@@ -62,11 +65,20 @@ class Site_Command {
 
 	private function determine_type( $args ) {
 
-		// default
+		// default site-type
 		$type = 'html';
 
-		$last_arg   = end( $args );
-		$arg_search = Site::find( $last_arg, [ 'site_type' ] );
+		// TODO: get type from config file as below
+		// $config_type = EE::get_config('type');
+		// $type        = empty( $config_type ) ? 'html' : $config_type; 
+
+		$last_arg = array_pop( $args );
+		if( substr( $last_arg, 0, 4 ) === 'http' ) {
+			$last_arg = str_replace(['https','http'],'',$last_arg);
+		}
+		$url_path = parse_url(EE\Utils\remove_trailing_slash($last_arg), PHP_URL_PATH);
+
+		$arg_search = Site::find( $url_path,['site_type'] );
 
 		if ( $arg_search ) {
 			return $arg_search->site_type;
@@ -74,8 +86,18 @@ class Site_Command {
 
 		$site_name = EE\SiteUtils\get_site_name();
 		if ( $site_name ) {
-			// TODO: Add check for wrong site-name entry
-			$type = Site::find( $site_name, [ 'site_type' ] )->site_type;
+			if( strpos($url_path, '.') !== false ) {
+				array_unshift( $args, 'ee site' );
+				$args[] = $site_name;
+				EE::error(
+					sprintf(
+					'%s is not a valid site-name. Did you mean `%s`?',
+					$last_arg,
+					implode(' ',$args)
+					)
+				 );
+			}
+			$type = Site::find( $site_name,['site_type'] )->site_type;
 		}
 
 		return $type;
