@@ -12,6 +12,14 @@ if ( ! defined( 'GLOBAL_DB_CONTAINER' ) ) {
 	define( 'GLOBAL_DB_CONTAINER', 'ee-global-db' );
 }
 
+if ( ! defined( 'GLOBAL_REDIS' ) ) {
+	define( 'GLOBAL_REDIS', 'global-redis' );
+}
+
+if ( ! defined( 'GLOBAL_REDIS_CONTAINER' ) ) {
+	define( 'GLOBAL_REDIS_CONTAINER', 'ee-global-redis' );
+}
+
 if ( ! defined( 'GLOBAL_NETWORK' ) ) {
 	define( 'GLOBAL_NETWORK', 'ee-global-network' );
 }
