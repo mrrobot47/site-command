@@ -203,6 +203,16 @@ function generate_global_docker_compose_yml( Filesystem $fs ) {
 					'global-network',
 				],
 			],
+			[
+				'name'           => GLOBAL_REDIS,
+				'container_name' => GLOBAL_REDIS_CONTAINER,
+				'image'          => 'easyengine/redis:' . $img_versions['easyengine/redis'],
+				'restart'        => 'always',
+				'volumes'        => [ EE_CONF_ROOT . '/services/redis:/data' ],
+				'networks'       => [
+					'global-network',
+				],
+			],
 		],
 	];
 
