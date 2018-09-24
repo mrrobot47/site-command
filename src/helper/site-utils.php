@@ -145,12 +145,13 @@ function init_checks() {
 
 /**
  * Function to start global db if it is not running.
+ * @param string $container Global container to be brought up.
  */
-function init_global_db() {
+function init_global_container( $container ) {
 
-	if ( 'running' !== EE::docker()::container_status( GLOBAL_DB ) ) {
+	if ( 'running' !== EE::docker()::container_status( $container ) ) {
 		chdir( EE_CONF_ROOT );
-		EE::docker()::boot_container( GLOBAL_DB, 'docker-compose up -d ' . GLOBAL_DB );
+		EE::docker()::boot_container( $container, 'docker-compose up -d ' . $container );
 	}
 }
 
