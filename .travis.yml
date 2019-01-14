@@ -16,7 +16,7 @@ before_script:
     else
       echo "xdebug.ini does not exist"
     fi
-  - ./ci/test-env-install.sh
+  - sudo ./ci/test-env-install.sh
   - ./ci/prepare.sh
   - sqlite3 /opt/easyengine/db/ee.sqlite '.schema'
 
