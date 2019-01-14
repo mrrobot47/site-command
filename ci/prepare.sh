@@ -26,6 +26,8 @@ composer update
 # Place the command inside EE repo
 sudo rm -rf vendor/easyengine/$TEST_COMMAND
 cp -R ../$TEST_COMMAND vendor/easyengine/
+ls -al vendor/easyengine/site-command/migrations/db/
+cat vendor/easyengine/site-command/migrations/db/20180910124650_site-command_create_table_site_migration.php
 
 # Create phar and test it
 php -dphar.readonly=0 ./utils/make-phar.php easyengine.phar --quite  > /dev/null
