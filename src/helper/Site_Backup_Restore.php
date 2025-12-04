@@ -631,8 +631,28 @@ class Site_Backup_Restore {
 		EE::debug( 'Free space: ' . $free_space );
 
 		if ( $site_size > $free_space ) {
-			EE::error( 'Not enough disk space to take backup. Please free up some space and try again.' );
+			$required_space      = $site_size;
+			$additional_space    = $required_space - $free_space;
+			$required_formatted  = $this->format_bytes( $required_space );
+			$available_formatted = $this->format_bytes( $free_space );
+			$needed_formatted    = $this->format_bytes( $additional_space );
+
+			$error_message = sprintf(
+				"Not enough disk space to take backup.\n" .
+				"Required: %s (%s bytes)\n" .
+				"Available: %s (%s bytes)\n" .
+				"Additional space needed: %s (%s bytes)\n" .
+				"Please free up some space and try again.",
+				$required_formatted,
+				number_format( $required_space ),
+				$available_formatted,
+				number_format( $free_space ),
+				$needed_formatted,
+				number_format( $additional_space )
+			);
+
 			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			EE::error( $error_message );
 		}
 	}
 
@@ -671,7 +691,27 @@ class Site_Backup_Restore {
 		$free_space = disk_free_space( EE_BACKUP_DIR );
 
 		if ( $remote_size > $free_space ) {
-			EE::error( 'Not enough disk space to restore backup. Please free up some space and try again.' );
+			$required_space      = $remote_size;
+			$additional_space    = $required_space - $free_space;
+			$required_formatted  = $this->format_bytes( $required_space );
+			$available_formatted = $this->format_bytes( $free_space );
+			$needed_formatted    = $this->format_bytes( $additional_space );
+
+			$error_message = sprintf(
+				"Not enough disk space to restore backup.\n" .
+				"Required: %s (%s bytes)\n" .
+				"Available: %s (%s bytes)\n" .
+				"Additional space needed: %s (%s bytes)\n" .
+				"Please free up some space and try again.",
+				$required_formatted,
+				number_format( $required_space ),
+				$available_formatted,
+				number_format( $free_space ),
+				$needed_formatted,
+				number_format( $additional_space )
+			);
+
+			EE::error( $error_message );
 		}
 
 
@@ -727,6 +767,18 @@ class Site_Backup_Restore {
 		EE::exec( $chown_command );
 	}
 
+
+	private function format_bytes( $bytes, $precision = 2 ) {
+		$units = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+
+		$bytes = max( $bytes, 0 );
+		$pow   = floor( ( $bytes ? log( $bytes ) : 0 ) / log( 1024 ) );
+		$pow   = min( $pow, count( $units ) - 1 );
+
+		$bytes /= pow( 1024, $pow );
+
+		return round( $bytes, $precision ) . ' ' . $units[ $pow ];
+	}
 
 	private function dir_size( string $directory ) {
 		$size = 0;
