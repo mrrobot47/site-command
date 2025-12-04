@@ -789,9 +789,9 @@ class Site_Backup_Restore {
 		$pow   = floor( ( $bytes ? log( $bytes ) : 0 ) / log( 1024 ) );
 		$pow   = min( $pow, count( $units ) - 1 );
 
-		$bytes /= pow( 1024, $pow );
+		$size = $bytes / pow( 1024, $pow );
 
-		return round( $bytes, $precision ) . ' ' . $units[ $pow ];
+		return round( $size, $precision ) . ' ' . $units[ $pow ];
 	}
 
 	private function dir_size( string $directory ) {
