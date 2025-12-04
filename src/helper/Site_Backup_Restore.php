@@ -631,31 +631,42 @@ class Site_Backup_Restore {
 		EE::debug( 'Free space: ' . $free_space );
 
 		if ( $site_size > $free_space ) {
-			$required_space      = $site_size;
-			$additional_space    = $required_space - $free_space;
-			$required_formatted  = $this->format_bytes( $required_space );
-			$available_formatted = $this->format_bytes( $free_space );
-			$needed_formatted    = $this->format_bytes( $additional_space );
-
-			$error_message = sprintf(
-				"Not enough disk space to take backup.\n" .
-				"Required: %s (%s bytes)\n" .
-				"Available: %s (%s bytes)\n" .
-				"Additional space needed: %s (%s bytes)\n" .
-				"Please free up some space and try again.",
-				$required_formatted,
-				number_format( $required_space ),
-				$available_formatted,
-				number_format( $free_space ),
-				$needed_formatted,
-				number_format( $additional_space )
-			);
+			$error_message = $this->build_disk_space_error_message('backup', $site_size, $free_space);
 
 			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
 			EE::error( $error_message );
 		}
 	}
 
+	/**
+	 * Build a disk space error message for backup/restore operations.
+	 *
+	 * @param string $operation The operation name ('backup' or 'restore').
+	 * @param int $required_space The required disk space in bytes.
+	 * @param int $free_space The available free space in bytes.
+	 * @return string The formatted error message.
+	 */
+	private function build_disk_space_error_message( $operation, $required_space, $free_space ) {
+		$additional_space    = $required_space - $free_space;
+		$required_formatted  = $this->format_bytes( $required_space );
+		$available_formatted = $this->format_bytes( $free_space );
+		$needed_formatted    = $this->format_bytes( $additional_space );
+
+		return sprintf(
+			"Not enough disk space to take %s.\n" .
+			"Required: %s (%s bytes)\n" .
+			"Available: %s (%s bytes)\n" .
+			"Additional space needed: %s (%s bytes)\n" .
+			"Please free up some space and try again.",
+			$operation,
+			$required_formatted,
+			number_format( $required_space ),
+			$available_formatted,
+			number_format( $free_space ),
+			$needed_formatted,
+			number_format( $additional_space )
+		);
+	}
 	private function check_and_install( $command, $name ) {
 		$status = EE::exec( "command -v $command" );
 		if ( ! $status ) {
