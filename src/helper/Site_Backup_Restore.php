@@ -689,6 +689,9 @@ class Site_Backup_Restore {
 		EE::debug( 'Remote backup size: ' . $remote_size );
 
 		$free_space = disk_free_space( EE_BACKUP_DIR );
+		if ( false === $free_space ) {
+			EE::error( 'Unable to determine free disk space for backup directory.' );
+		}
 
 		if ( $remote_size > $free_space ) {
 			$required_space      = $remote_size;
