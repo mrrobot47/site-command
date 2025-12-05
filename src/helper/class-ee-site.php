@@ -2485,6 +2485,9 @@ abstract class EE_Site_Command {
 	 * [--list]
 	 * : List all available backups on remote.
 	 *
+	 * [--dash-auth]
+	 * : Pass dash auth token and backup id. For EasyEngine dash use only.
+	 *
 	 * ## EXAMPLES
 	 *
 	 *     # Backup a site
