@@ -15,6 +15,14 @@ class Site_Backup_Restore {
 	public $site_data;
 	private $rclone_config_path;
 
+	// Properties for EasyDash callback handling
+	private $dash_auth_enabled = false;
+	private $dash_backup_id;
+	private $dash_verify_token;
+	private $dash_api_url;
+	private $dash_backup_metadata;
+	private $dash_backup_completed = false;
+
 	public function __construct() {
 		$this->fs = new Filesystem();
 	}
@@ -32,13 +40,47 @@ class Site_Backup_Restore {
 			return; // Exit after listing backups
 		}
 
+		// Handle --dash-auth flag for EasyDash integration
+		$dash_auth = \EE\Utils\get_flag_value( $assoc_args, 'dash-auth' );
+
+		if ( $dash_auth ) {
+			// Debug: Log the raw dash_auth value received
+			EE::debug( 'Received --dash-auth value: ' . $dash_auth );
+
+			// Parse backup-id:backup-verification-token format
+			$auth_parts = explode( ':', $dash_auth, 2 );
+			if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
+				EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
+			}
+
+			// Check for ed-api-url configuration
+			$ed_api_url = get_config_value( 'ed-api-url', '' );
+			if ( empty( $ed_api_url ) ) {
+				EE::error( 'ed-api-url is not configured. Please set it in /opt/easyengine/config/config.yml' );
+			}
+
+			// Store dash auth info in class properties for shutdown handler
+			$this->dash_auth_enabled = true;
+			$this->dash_backup_id    = $auth_parts[0];
+			$this->dash_verify_token = $auth_parts[1];
+			$this->dash_api_url      = $ed_api_url;
+
+			// Debug: Log parsed values
+			EE::debug( 'Parsed backup_id: ' . $this->dash_backup_id );
+			EE::debug( 'Parsed verify_token: ' . $this->dash_verify_token );
+			EE::debug( 'API URL: ' . $this->dash_api_url );
+
+			// Register shutdown handler to send failure callback if backup doesn't complete
+			register_shutdown_function( [ $this, 'dash_shutdown_handler' ] );
+		}
+
 		$this->pre_backup_check();
 		$backup_dir = EE_BACKUP_DIR . '/' . $this->site_data['site_url'];
 
 		$this->fs->remove( $backup_dir );
 		$this->fs->mkdir( $backup_dir );
 
-		$this->backup_site_details( $backup_dir );
+		$this->dash_backup_metadata = $this->backup_site_details( $backup_dir );
 
 		switch ( $this->site_data['site_type'] ) {
 			case 'html':
@@ -56,7 +98,34 @@ class Site_Backup_Restore {
 		$this->fs->remove( $backup_dir );
 
 		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+
+		// Mark backup as completed and send success callback
+		$this->dash_backup_completed = true;
+		if ( $this->dash_auth_enabled ) {
+			$this->send_dash_success_callback(
+				$this->dash_api_url,
+				$this->dash_backup_id,
+				$this->dash_verify_token,
+				$this->dash_backup_metadata
+			);
+		}
+
 		delem_log( 'site backup end' );
+	}
+
+	/**
+	 * Shutdown handler to send failure callback to EasyDash if backup didn't complete.
+	 * This is called when script terminates (including via EE::error which calls exit).
+	 */
+	public function dash_shutdown_handler() {
+		// Only send failure callback if dash auth was enabled and backup didn't complete
+		if ( $this->dash_auth_enabled && ! $this->dash_backup_completed ) {
+			$this->send_dash_failure_callback(
+				$this->dash_api_url,
+				$this->dash_backup_id,
+				$this->dash_verify_token
+			);
+		}
 	}
 
 	public function restore( $args, $assoc_args = [] ) {
@@ -1041,5 +1110,111 @@ class Site_Backup_Restore {
 			$restore_command = sprintf( 'rsync -a %s/php/php/conf.d/custom.ini %s/config/php/php/conf.d/custom.ini', $backup_dir, EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
 			EE::exec( $restore_command );
 		}
+	}
+
+	/**
+	 * Send success callback to EasyDash API after successful backup.
+	 *
+	 * @param string $ed_api_url      The EasyDash API URL.
+	 * @param string $backup_id       The backup ID.
+	 * @param string $verify_token    The verification token.
+	 * @param array  $backup_metadata The backup metadata.
+	 */
+	private function send_dash_success_callback( $ed_api_url, $backup_id, $verify_token, $backup_metadata ) {
+		$endpoint = rtrim( $ed_api_url, '/' ) . '/easydash.easydash.doctype.site_backup.site_backup.on_ee_backup_success';
+
+		// Debug: Log the values being used for callback
+		EE::debug( 'Sending success callback with backup_id: ' . $backup_id );
+		EE::debug( 'Sending success callback with verify_token: ' . $verify_token );
+
+		// Build metadata for the API call - always include all fields
+		$metadata = [
+			'post_count'    => $this->sanitize_count( $backup_metadata['post_count'] ?? 0 ),
+			'theme_count'   => $this->sanitize_count( $backup_metadata['theme_count'] ?? 0 ),
+			'user_count'    => $this->sanitize_count( $backup_metadata['user_count'] ?? 0 ),
+			'plugin_count'  => $this->sanitize_count( $backup_metadata['plugin_count'] ?? 0 ),
+			'wp_version'    => $backup_metadata['wp_version'] ?? '',
+			'comment_count' => $this->sanitize_count( $backup_metadata['comment_count'] ?? 0 ),
+			'page_count'    => $this->sanitize_count( $backup_metadata['page_count'] ?? 0 ),
+			'upload_count'  => $this->sanitize_count( $backup_metadata['upload_count'] ?? 0 ),
+			'site_type'     => $backup_metadata['site_type'] ?? 'html',
+			'remote_path'   => $backup_metadata['remote_path'] ?? '',
+		];
+
+		$payload = [
+			'site'     => $this->site_data['site_url'],
+			'backup'   => $backup_id,
+			'verify'   => $verify_token,
+			'metadata' => $metadata,
+		];
+
+		EE::debug( 'Payload being sent: ' . json_encode( $payload ) );
+
+		$this->send_dash_request( $endpoint, $payload );
+	}
+
+	/**
+	 * Send failure callback to EasyDash API after failed backup.
+	 *
+	 * @param string $ed_api_url   The EasyDash API URL.
+	 * @param string $backup_id    The backup ID.
+	 * @param string $verify_token The verification token.
+	 */
+	private function send_dash_failure_callback( $ed_api_url, $backup_id, $verify_token ) {
+		$endpoint = rtrim( $ed_api_url, '/' ) . '/easydash.easydash.doctype.site_backup.site_backup.on_ee_backup_failure';
+
+		$payload = [
+			'site'   => $this->site_data['site_url'],
+			'backup' => $backup_id,
+			'verify' => $verify_token,
+		];
+
+		$this->send_dash_request( $endpoint, $payload );
+	}
+
+	/**
+	 * Send HTTP request to EasyDash API.
+	 *
+	 * @param string $endpoint The API endpoint URL.
+	 * @param array  $payload  The request payload.
+	 */
+	private function send_dash_request( $endpoint, $payload ) {
+		$ch = curl_init( $endpoint );
+
+		curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
+		curl_setopt( $ch, CURLOPT_POST, true );
+		curl_setopt( $ch, CURLOPT_POSTFIELDS, json_encode( $payload ) );
+		curl_setopt( $ch, CURLOPT_HTTPHEADER, [
+			'Content-Type: application/json',
+		] );
+		curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
+
+		$response = curl_exec( $ch );
+		$http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+		$error = curl_error( $ch );
+
+		curl_close( $ch );
+
+		if ( $error ) {
+			EE::warning( 'Failed to send callback to EasyDash: ' . $error );
+		} elseif ( $http_code >= 400 ) {
+			EE::warning( 'EasyDash callback returned HTTP ' . $http_code . '. Response: ' . $response );
+		} else {
+			EE::log( 'EasyDash callback sent successfully.' );
+			EE::debug( 'EasyDash response: ' . $response );
+		}
+	}
+
+	/**
+	 * Sanitize count value for API payload.
+	 *
+	 * @param mixed $value The value to sanitize.
+	 * @return int The sanitized integer value.
+	 */
+	private function sanitize_count( $value ) {
+		if ( $value === '-' || ! is_numeric( $value ) ) {
+			return 0;
+		}
+		return intval( $value );
 	}
 }
