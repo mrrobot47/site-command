@@ -1200,10 +1200,13 @@ class Site_Backup_Restore {
 
 			curl_close( $ch );
 
+			// Normalize response for safe string concatenation
+			$response_text = ( false === $response ) ? 'No response received' : $response;
+
 			// Check if request was successful
 			if ( ! $error && $http_code >= 200 && $http_code < 300 ) {
 				EE::log( 'EasyEngine Dashboard callback sent successfully.' );
-				EE::debug( 'EasyEngine Dashboard response: ' . $response );
+				EE::debug( 'EasyEngine Dashboard response: ' . $response_text );
 				return; // Success, exit the retry loop
 			}
 
@@ -1219,7 +1222,7 @@ class Site_Backup_Restore {
 					$max_retries,
 					$retry_delay
 				) );
-				EE::debug( 'Response: ' . $response );
+				EE::debug( 'Response: ' . $response_text );
 				sleep( $retry_delay );
 			} else {
 				// Either not a 5xx error, or we've exhausted all retries
@@ -1230,11 +1233,11 @@ class Site_Backup_Restore {
 						'EasyEngine Dashboard callback failed after %d retries with HTTP %d. Response: %s',
 						$max_retries,
 						$http_code,
-						$response
+						$response_text
 					) );
 				} else {
 					// 4xx or other error codes that shouldn't be retried
-					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response );
+					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response_text );
 				}
 				break; // Exit the retry loop
 			}
