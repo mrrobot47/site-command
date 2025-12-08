@@ -390,7 +390,7 @@ class Site_Backup_Restore {
 
 		$conf_dir       = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/config';
 		$backup_file    = $backup_dir . '/conf.zip';
-		$backup_command = sprintf( 'cd %s && 7z a -snl -mx=1 %s nginx', $conf_dir, $backup_file );
+		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s nginx', $conf_dir, $backup_file );
 
 		EE::exec( $backup_command );
 	}
@@ -400,7 +400,7 @@ class Site_Backup_Restore {
 
 		$conf_dir       = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/config';
 		$backup_file    = $backup_dir . '/conf.zip';
-		$backup_command = sprintf( 'cd %s && 7z u -snl -mx=1 %s php', $conf_dir, $backup_file );
+		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s php', $conf_dir, $backup_file );
 
 		EE::exec( $backup_command );
 	}
