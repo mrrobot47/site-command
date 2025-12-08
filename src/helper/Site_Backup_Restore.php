@@ -1181,9 +1181,10 @@ class Site_Backup_Restore {
 	private function send_dash_request( $endpoint, $payload ) {
 		$max_retries = 3;
 		$retry_delay = 300; // 5 minutes in seconds
-		$attempt = 0;
+		$max_attempts = $max_retries + 1; // 1 initial attempt + 3 retries = 4 total
+		$attempt = 1;
 
-		while ( $attempt <= $max_retries ) {
+		while ( $attempt <= $max_attempts ) {
 			$ch = curl_init( $endpoint );
 
 			curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
@@ -1200,41 +1201,49 @@ class Site_Backup_Restore {
 
 			curl_close( $ch );
 
+			// Normalize response for safe string concatenation
+			$response_text = ( false === $response ) ? 'No response received' : $response;
+
 			// Check if request was successful
 			if ( ! $error && $http_code >= 200 && $http_code < 300 ) {
 				EE::log( 'EasyEngine Dashboard callback sent successfully.' );
-				EE::debug( 'EasyEngine Dashboard response: ' . $response );
+				EE::debug( 'EasyEngine Dashboard response: ' . $response_text );
 				return; // Success, exit the retry loop
 			}
 
 			// Check if it's a 5xx error (server error) that should be retried
 			$is_5xx_error = $http_code >= 500 && $http_code < 600;
 
-			if ( $is_5xx_error && $attempt < $max_retries ) {
-				$attempt++;
+			if ( $is_5xx_error && $attempt < $max_attempts ) {
 				EE::warning( sprintf(
 					'EasyEngine Dashboard callback failed with HTTP %d (attempt %d/%d). Retrying in %d seconds...',
 					$http_code,
 					$attempt,
-					$max_retries,
+					$max_attempts,
 					$retry_delay
 				) );
-				EE::debug( 'Response: ' . $response );
+				EE::debug( 'Response: ' . $response_text );
 				sleep( $retry_delay );
+				$attempt++; // Increment at end of loop iteration
 			} else {
 				// Either not a 5xx error, or we've exhausted all retries
 				if ( $error ) {
+					// cURL error occurred (network, DNS, timeout, etc.)
 					EE::warning( 'Failed to send callback to EasyEngine Dashboard: ' . $error );
 				} elseif ( $is_5xx_error ) {
+					// 5xx error after all retries exhausted
 					EE::warning( sprintf(
 						'EasyEngine Dashboard callback failed after %d retries with HTTP %d. Response: %s',
 						$max_retries,
 						$http_code,
-						$response
+						$response_text
 					) );
+				} elseif ( $http_code === 0 ) {
+					// No HTTP response received (may indicate network/cURL issue without explicit error)
+					EE::warning( 'EasyEngine Dashboard callback failed: No HTTP response received. This may indicate a network or cURL error. Response: ' . $response_text );
 				} else {
-					// 4xx or other error codes that shouldn't be retried
-					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response );
+					// 4xx or other HTTP error codes that shouldn't be retried
+					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response_text );
 				}
 				break; // Exit the retry loop
 			}
