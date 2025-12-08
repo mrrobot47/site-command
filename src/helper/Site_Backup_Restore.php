@@ -1173,35 +1173,71 @@ class Site_Backup_Restore {
 	}
 
 	/**
-	 * Send HTTP request to EasyDash API.
+	 * Send HTTP request to EasyEngine Dashboard API with retry logic for 5xx errors.
 	 *
 	 * @param string $endpoint The API endpoint URL.
 	 * @param array  $payload  The request payload.
 	 */
 	private function send_dash_request( $endpoint, $payload ) {
-		$ch = curl_init( $endpoint );
+		$max_retries = 3;
+		$retry_delay = 300; // 5 minutes in seconds
+		$attempt = 0;
 
-		curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
-		curl_setopt( $ch, CURLOPT_POST, true );
-		curl_setopt( $ch, CURLOPT_POSTFIELDS, json_encode( $payload ) );
-		curl_setopt( $ch, CURLOPT_HTTPHEADER, [
-			'Content-Type: application/json',
-		] );
-		curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
+		while ( $attempt <= $max_retries ) {
+			$ch = curl_init( $endpoint );
 
-		$response = curl_exec( $ch );
-		$http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
-		$error = curl_error( $ch );
+			curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
+			curl_setopt( $ch, CURLOPT_POST, true );
+			curl_setopt( $ch, CURLOPT_POSTFIELDS, json_encode( $payload ) );
+			curl_setopt( $ch, CURLOPT_HTTPHEADER, [
+				'Content-Type: application/json',
+			] );
+			curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
 
-		curl_close( $ch );
+			$response = curl_exec( $ch );
+			$http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+			$error = curl_error( $ch );
 
-		if ( $error ) {
-			EE::warning( 'Failed to send callback to EasyDash: ' . $error );
-		} elseif ( $http_code >= 400 ) {
-			EE::warning( 'EasyDash callback returned HTTP ' . $http_code . '. Response: ' . $response );
-		} else {
-			EE::log( 'EasyDash callback sent successfully.' );
-			EE::debug( 'EasyDash response: ' . $response );
+			curl_close( $ch );
+
+			// Check if request was successful
+			if ( ! $error && $http_code >= 200 && $http_code < 300 ) {
+				EE::log( 'EasyEngine Dashboard callback sent successfully.' );
+				EE::debug( 'EasyEngine Dashboard response: ' . $response );
+				return; // Success, exit the retry loop
+			}
+
+			// Check if it's a 5xx error (server error) that should be retried
+			$is_5xx_error = $http_code >= 500 && $http_code < 600;
+
+			if ( $is_5xx_error && $attempt < $max_retries ) {
+				$attempt++;
+				EE::warning( sprintf(
+					'EasyEngine Dashboard callback failed with HTTP %d (attempt %d/%d). Retrying in %d seconds...',
+					$http_code,
+					$attempt,
+					$max_retries,
+					$retry_delay
+				) );
+				EE::debug( 'Response: ' . $response );
+				sleep( $retry_delay );
+			} else {
+				// Either not a 5xx error, or we've exhausted all retries
+				if ( $error ) {
+					EE::warning( 'Failed to send callback to EasyEngine Dashboard: ' . $error );
+				} elseif ( $is_5xx_error ) {
+					EE::warning( sprintf(
+						'EasyEngine Dashboard callback failed after %d retries with HTTP %d. Response: %s',
+						$max_retries,
+						$http_code,
+						$response
+					) );
+				} else {
+					// 4xx or other error codes that shouldn't be retried
+					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response );
+				}
+				break; // Exit the retry loop
+			}
 		}
 	}
 
