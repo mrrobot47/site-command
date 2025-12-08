@@ -1181,9 +1181,10 @@ class Site_Backup_Restore {
 	private function send_dash_request( $endpoint, $payload ) {
 		$max_retries = 3;
 		$retry_delay = 300; // 5 minutes in seconds
-		$attempt = 1; // Start at 1 for clearer messaging
+		$max_attempts = $max_retries + 1; // 1 initial attempt + 3 retries = 4 total
+		$attempt = 1;
 
-		while ( $attempt <= $max_retries + 1 ) { // +1 for initial attempt
+		while ( $attempt <= $max_attempts ) {
 			$ch = curl_init( $endpoint );
 
 			curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
@@ -1213,17 +1214,17 @@ class Site_Backup_Restore {
 			// Check if it's a 5xx error (server error) that should be retried
 			$is_5xx_error = $http_code >= 500 && $http_code < 600;
 
-			if ( $is_5xx_error && $attempt < $max_retries + 1 ) {
+			if ( $is_5xx_error && $attempt < $max_attempts ) {
 				EE::warning( sprintf(
 					'EasyEngine Dashboard callback failed with HTTP %d (attempt %d/%d). Retrying in %d seconds...',
 					$http_code,
 					$attempt,
-					$max_retries + 1,
+					$max_attempts,
 					$retry_delay
 				) );
 				EE::debug( 'Response: ' . $response_text );
-				$attempt++;
 				sleep( $retry_delay );
+				$attempt++; // Increment at end of loop iteration
 			} else {
 				// Either not a 5xx error, or we've exhausted all retries
 				if ( $error ) {
