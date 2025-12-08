@@ -995,23 +995,13 @@ class Site_Backup_Restore {
 
 		$this->rclone_config_path = $this->get_rclone_config_path();
 
-		$no_of_backups = intval( get_config_value( 'no-of-backups', 7 ) );
-
 		$backups   = $this->list_remote_backups( true );
 		$timestamp = time() . '_' . date( 'Y-m-d-H-i-s' );
 
 		if ( ! empty( $backups ) ) {
 
-			if ( $upload ) {
-				if ( count( $backups ) > $no_of_backups ) {
-					$backups_to_delete = array_slice( $backups, $no_of_backups );
-					foreach ( $backups_to_delete as $backup ) {
-						EE::log( 'Deleting old backup: ' . $backup );
-						EE::launch( sprintf( 'rclone purge %s/%s', $this->rclone_config_path, $backup ) );
-					}
-				}
-			} else {
-
+			if ( ! $upload ) {
+				// For restore: use the most recent backup
 				$timestamp = $backups[0];
 				EE::log( 'Restoring from backup: ' . $timestamp );
 			}
@@ -1066,6 +1056,46 @@ class Site_Backup_Restore {
 			$output      = EE::launch( $command );
 			$remote_path = $output->stdout;
 			EE::success( 'Backup uploaded to remote storage. Remote path: ' . $remote_path );
+
+			// Delete old backups AFTER successful upload
+			$this->cleanup_old_backups();
+		}
+	}
+
+	/**
+	 * Delete old backups from remote storage after successful upload.
+	 * Keeps only the configured number of most recent backups.
+	 */
+	private function cleanup_old_backups() {
+		$no_of_backups = intval( get_config_value( 'no-of-backups', 7 ) );
+
+		// Get fresh list of backups after the new upload
+		$backups = $this->list_remote_backups( true );
+
+		if ( empty( $backups ) ) {
+			return;
+		}
+
+		// Check if we have more backups than allowed
+		if ( count( $backups ) > $no_of_backups ) {
+			$backups_to_delete = array_slice( $backups, $no_of_backups );
+			
+			EE::log( sprintf( 'Cleaning up old backups. Keeping %d most recent backups.', $no_of_backups ) );
+			
+			foreach ( $backups_to_delete as $backup ) {
+				EE::log( 'Deleting old backup: ' . $backup );
+				$result = EE::launch( sprintf( 'rclone purge %s/%s', $this->get_rclone_config_path(), $backup ) );
+				
+				if ( $result->return_code ) {
+					EE::warning( 'Failed to delete old backup: ' . $backup );
+				} else {
+					EE::debug( 'Successfully deleted old backup: ' . $backup );
+				}
+			}
+			
+			EE::success( sprintf( 'Cleaned up %d old backup(s).', count( $backups_to_delete ) ) );
+		} else {
+			EE::debug( sprintf( 'No cleanup needed. Current backups: %d, Maximum allowed: %d', count( $backups ), $no_of_backups ) );
 		}
 	}
 
