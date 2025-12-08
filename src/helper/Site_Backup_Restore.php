@@ -1227,16 +1227,21 @@ class Site_Backup_Restore {
 			} else {
 				// Either not a 5xx error, or we've exhausted all retries
 				if ( $error ) {
+					// cURL error occurred (network, DNS, timeout, etc.)
 					EE::warning( 'Failed to send callback to EasyEngine Dashboard: ' . $error );
 				} elseif ( $is_5xx_error ) {
+					// 5xx error after all retries exhausted
 					EE::warning( sprintf(
 						'EasyEngine Dashboard callback failed after %d retries with HTTP %d. Response: %s',
 						$max_retries,
 						$http_code,
 						$response_text
 					) );
+				} elseif ( $http_code === 0 ) {
+					// No HTTP response received (may indicate network/cURL issue without explicit error)
+					EE::warning( 'EasyEngine Dashboard callback failed: No HTTP response received. This may indicate a network or cURL error. Response: ' . $response_text );
 				} else {
-					// 4xx or other error codes that shouldn't be retried
+					// 4xx or other HTTP error codes that shouldn't be retried
 					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response_text );
 				}
 				break; // Exit the retry loop
