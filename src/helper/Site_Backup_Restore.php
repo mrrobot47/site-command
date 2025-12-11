@@ -1098,18 +1098,15 @@ class Site_Backup_Restore {
 			$backups_to_delete = array_slice( $backups, $no_of_backups );
 			
 			EE::log( sprintf( 'Cleaning up old backups. Keeping %d most recent backups.', $no_of_backups ) );
-			
 			foreach ( $backups_to_delete as $backup ) {
 				EE::log( 'Deleting old backup: ' . $backup );
-				$result = EE::launch( sprintf( 'rclone purge %s/%s', $this->get_rclone_config_path(), $backup ) );
-				
+				$result = EE::launch( sprintf( 'rclone purge %s/%s', escapeshellarg( $this->get_rclone_config_path() ), escapeshellarg( $backup ) ) );
 				if ( $result->return_code ) {
 					EE::warning( 'Failed to delete old backup: ' . $backup );
 				} else {
 					EE::debug( 'Successfully deleted old backup: ' . $backup );
 				}
 			}
-			
 			EE::success( sprintf( 'Cleaned up %d old backup(s).', count( $backups_to_delete ) ) );
 		} else {
 			EE::debug( sprintf( 'No cleanup needed. Current backups: %d, Maximum allowed: %d', count( $backups ), $no_of_backups ) );
