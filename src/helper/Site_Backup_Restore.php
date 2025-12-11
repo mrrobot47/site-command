@@ -22,6 +22,7 @@ class Site_Backup_Restore {
 	private $dash_api_url;
 	private $dash_backup_metadata;
 	private $dash_backup_completed = false;
+	private $dash_new_backup_path; // Track new backup path for potential rollback
 
 	public function __construct() {
 		$this->fs = new Filesystem();
@@ -102,12 +103,20 @@ class Site_Backup_Restore {
 		// Mark backup as completed and send success callback
 		$this->dash_backup_completed = true;
 		if ( $this->dash_auth_enabled ) {
-			$this->send_dash_success_callback(
+			$api_success = $this->send_dash_success_callback(
 				$this->dash_api_url,
 				$this->dash_backup_id,
 				$this->dash_verify_token,
 				$this->dash_backup_metadata
 			);
+
+			// Only cleanup old backups if API callback succeeded
+			// If API failed, rollback the newly uploaded backup
+			if ( $api_success ) {
+				$this->cleanup_old_backups();
+			} else {
+				$this->rollback_failed_backup();
+			}
 		}
 
 		delem_log( 'site backup end' );
@@ -995,23 +1004,13 @@ class Site_Backup_Restore {
 
 		$this->rclone_config_path = $this->get_rclone_config_path();
 
-		$no_of_backups = intval( get_config_value( 'no-of-backups', 7 ) );
-
 		$backups   = $this->list_remote_backups( true );
 		$timestamp = time() . '_' . date( 'Y-m-d-H-i-s' );
 
 		if ( ! empty( $backups ) ) {
 
-			if ( $upload ) {
-				if ( count( $backups ) > $no_of_backups ) {
-					$backups_to_delete = array_slice( $backups, $no_of_backups );
-					foreach ( $backups_to_delete as $backup ) {
-						EE::log( 'Deleting old backup: ' . $backup );
-						EE::launch( sprintf( 'rclone purge %s/%s', $this->rclone_config_path, $backup ) );
-					}
-				}
-			} else {
-
+			if ( ! $upload ) {
+				// For restore: use the most recent backup
 				$timestamp = $backups[0];
 				EE::log( 'Restoring from backup: ' . $timestamp );
 			}
@@ -1066,6 +1065,76 @@ class Site_Backup_Restore {
 			$output      = EE::launch( $command );
 			$remote_path = $output->stdout;
 			EE::success( 'Backup uploaded to remote storage. Remote path: ' . $remote_path );
+
+			// Store the new backup path for potential rollback (only when using dash-auth)
+			if ( $this->dash_auth_enabled ) {
+				$this->dash_new_backup_path = $this->get_remote_path();
+			}
+
+			// Only delete old backups immediately if NOT using dash-auth
+			// If using dash-auth, cleanup happens after API callback succeeds
+			if ( ! $this->dash_auth_enabled ) {
+				$this->cleanup_old_backups();
+			}
+		}
+	}
+
+	/**
+	 * Delete old backups from remote storage after successful upload.
+	 * Keeps only the configured number of most recent backups.
+	 */
+	private function cleanup_old_backups() {
+		$no_of_backups = intval( get_config_value( 'no-of-backups', 7 ) );
+
+		// Get fresh list of backups after the new upload
+		$backups = $this->list_remote_backups( true );
+
+		if ( empty( $backups ) ) {
+			return;
+		}
+
+		// Check if we have more backups than allowed
+		if ( count( $backups ) > ( $no_of_backups + 1 ) ) {
+			$backups_to_delete = array_slice( $backups, $no_of_backups );
+			
+			EE::log( sprintf( 'Cleaning up old backups. Keeping %d most recent backups.', $no_of_backups ) );
+			foreach ( $backups_to_delete as $backup ) {
+				EE::log( 'Deleting old backup: ' . $backup );
+				$result = EE::launch( sprintf( 'rclone purge %s/%s', escapeshellarg( $this->get_rclone_config_path() ), escapeshellarg( $backup ) ) );
+				if ( $result->return_code ) {
+					EE::warning( 'Failed to delete old backup: ' . $backup );
+				} else {
+					EE::debug( 'Successfully deleted old backup: ' . $backup );
+				}
+			}
+			EE::success( sprintf( 'Cleaned up %d old backup(s).', count( $backups_to_delete ) ) );
+		} else {
+			EE::debug( sprintf( 'No cleanup needed. Current backups: %d, Maximum allowed: %d', count( $backups ), $no_of_backups ) );
+		}
+	}
+
+	/**
+	 * Rollback (delete) the newly uploaded backup when EasyDash API callback fails.
+	 * This prevents orphaned backups in remote storage that aren't tracked by EasyDash.
+	 */
+	private function rollback_failed_backup() {
+		if ( empty( $this->dash_new_backup_path ) ) {
+			EE::warning( 'Cannot rollback backup: backup path not found.' );
+			return;
+		}
+
+		EE::warning( 'EasyDash API callback failed. Rolling back newly uploaded backup...' );
+		EE::log( 'Deleting unregistered backup: ' . $this->dash_new_backup_path );
+
+		$result = EE::launch( sprintf( 'rclone purge %s', escapeshellarg( $this->dash_new_backup_path ) ) );
+
+		if ( $result->return_code ) {
+			EE::warning( sprintf(
+				'Failed to delete backup from remote storage. Please manually delete: %s',
+				$this->dash_new_backup_path
+			) );
+		} else {
+			EE::success( 'Successfully removed unregistered backup from remote storage.' );
 		}
 	}
 
@@ -1119,6 +1188,7 @@ class Site_Backup_Restore {
 	 * @param string $backup_id       The backup ID.
 	 * @param string $verify_token    The verification token.
 	 * @param array  $backup_metadata The backup metadata.
+	 * @return bool True if API request succeeded, false otherwise.
 	 */
 	private function send_dash_success_callback( $ed_api_url, $backup_id, $verify_token, $backup_metadata ) {
 		$endpoint = rtrim( $ed_api_url, '/' ) . '/easydash.easydash.doctype.site_backup.site_backup.on_ee_backup_success';
@@ -1150,7 +1220,7 @@ class Site_Backup_Restore {
 
 		EE::debug( 'Payload being sent: ' . json_encode( $payload ) );
 
-		$this->send_dash_request( $endpoint, $payload );
+		return $this->send_dash_request( $endpoint, $payload );
 	}
 
 	/**
@@ -1173,10 +1243,11 @@ class Site_Backup_Restore {
 	}
 
 	/**
-	 * Send HTTP request to EasyEngine Dashboard API with retry logic for 5xx errors.
+	 * Send HTTP request to EasyEngine Dashboard API with retry logic for 5xx errors and connection errors.
 	 *
 	 * @param string $endpoint The API endpoint URL.
 	 * @param array  $payload  The request payload.
+	 * @return bool True if request succeeded, false otherwise.
 	 */
 	private function send_dash_request( $endpoint, $payload ) {
 		$max_retries = 3;
@@ -1208,28 +1279,47 @@ class Site_Backup_Restore {
 			if ( ! $error && $http_code >= 200 && $http_code < 300 ) {
 				EE::log( 'EasyEngine Dashboard callback sent successfully.' );
 				EE::debug( 'EasyEngine Dashboard response: ' . $response_text );
-				return; // Success, exit the retry loop
+				return true; // Success
 			}
 
-			// Check if it's a 5xx error (server error) that should be retried
+			// Determine if this is a retryable error
 			$is_5xx_error = $http_code >= 500 && $http_code < 600;
+			$is_connection_error = ! empty( $error ) || $http_code === 0;
+			$should_retry = ( $is_5xx_error || $is_connection_error ) && $attempt < $max_attempts;
 
-			if ( $is_5xx_error && $attempt < $max_attempts ) {
-				EE::warning( sprintf(
-					'EasyEngine Dashboard callback failed with HTTP %d (attempt %d/%d). Retrying in %d seconds...',
-					$http_code,
-					$attempt,
-					$max_attempts,
-					$retry_delay
-				) );
-				EE::debug( 'Response: ' . $response_text );
+			if ( $should_retry ) {
+				// Retry on 5xx errors or connection errors
+				if ( $is_5xx_error ) {
+					EE::warning( sprintf(
+						'EasyEngine Dashboard callback failed with HTTP %d (attempt %d/%d). Retrying in %d seconds...',
+						$http_code,
+						$attempt,
+						$max_attempts,
+						$retry_delay
+					) );
+					EE::debug( 'Response: ' . $response_text );
+				} else {
+					// Connection error
+					$error_message = ! empty( $error ) ? $error : 'No HTTP response received';
+					EE::warning( sprintf(
+						'EasyEngine Dashboard connection error: %s (attempt %d/%d). Retrying in %d seconds...',
+						$error_message,
+						$attempt,
+						$max_attempts,
+						$retry_delay
+					) );
+				}
 				sleep( $retry_delay );
 				$attempt++; // Increment at end of loop iteration
 			} else {
-				// Either not a 5xx error, or we've exhausted all retries
+				// Either not a retryable error, or we've exhausted all retries
 				if ( $error ) {
-					// cURL error occurred (network, DNS, timeout, etc.)
-					EE::warning( 'Failed to send callback to EasyEngine Dashboard: ' . $error );
+					// cURL error occurred after all retries (network, DNS, timeout, etc.)
+					EE::warning( sprintf(
+						'Failed to send callback to EasyEngine Dashboard after %d retries: %s',
+						$max_retries,
+						$error
+					) );
 				} elseif ( $is_5xx_error ) {
 					// 5xx error after all retries exhausted
 					EE::warning( sprintf(
@@ -1239,15 +1329,21 @@ class Site_Backup_Restore {
 						$response_text
 					) );
 				} elseif ( $http_code === 0 ) {
-					// No HTTP response received (may indicate network/cURL issue without explicit error)
-					EE::warning( 'EasyEngine Dashboard callback failed: No HTTP response received. This may indicate a network or cURL error. Response: ' . $response_text );
+					// No HTTP response received after all retries
+					EE::warning( sprintf(
+						'EasyEngine Dashboard callback failed after %d retries: No HTTP response received. Response: %s',
+						$max_retries,
+						$response_text
+					) );
 				} else {
 					// 4xx or other HTTP error codes that shouldn't be retried
 					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response_text );
 				}
-				break; // Exit the retry loop
+				return false; // Failure
 			}
 		}
+
+		return false; // Should never reach here, but return false as fallback
 	}
 
 	/**
