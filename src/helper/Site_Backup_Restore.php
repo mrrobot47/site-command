@@ -15,6 +15,15 @@ class Site_Backup_Restore {
 	public $site_data;
 	private $rclone_config_path;
 
+	// Properties for EasyDash callback handling
+	private $dash_auth_enabled = false;
+	private $dash_backup_id;
+	private $dash_verify_token;
+	private $dash_api_url;
+	private $dash_backup_metadata;
+	private $dash_backup_completed = false;
+	private $dash_new_backup_path; // Track new backup path for potential rollback
+
 	public function __construct() {
 		$this->fs = new Filesystem();
 	}
@@ -32,13 +41,47 @@ class Site_Backup_Restore {
 			return; // Exit after listing backups
 		}
 
+		// Handle --dash-auth flag for EasyDash integration
+		$dash_auth = \EE\Utils\get_flag_value( $assoc_args, 'dash-auth' );
+
+		if ( $dash_auth ) {
+			// Debug: Log the raw dash_auth value received
+			EE::debug( 'Received --dash-auth value: ' . $dash_auth );
+
+			// Parse backup-id:backup-verification-token format
+			$auth_parts = explode( ':', $dash_auth, 2 );
+			if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
+				EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
+			}
+
+			// Check for ed-api-url configuration
+			$ed_api_url = get_config_value( 'ed-api-url', '' );
+			if ( empty( $ed_api_url ) ) {
+				EE::error( 'ed-api-url is not configured. Please set it in /opt/easyengine/config/config.yml' );
+			}
+
+			// Store dash auth info in class properties for shutdown handler
+			$this->dash_auth_enabled = true;
+			$this->dash_backup_id    = $auth_parts[0];
+			$this->dash_verify_token = $auth_parts[1];
+			$this->dash_api_url      = $ed_api_url;
+
+			// Debug: Log parsed values
+			EE::debug( 'Parsed backup_id: ' . $this->dash_backup_id );
+			EE::debug( 'Parsed verify_token: ' . $this->dash_verify_token );
+			EE::debug( 'API URL: ' . $this->dash_api_url );
+
+			// Register shutdown handler to send failure callback if backup doesn't complete
+			register_shutdown_function( [ $this, 'dash_shutdown_handler' ] );
+		}
+
 		$this->pre_backup_check();
 		$backup_dir = EE_BACKUP_DIR . '/' . $this->site_data['site_url'];
 
 		$this->fs->remove( $backup_dir );
 		$this->fs->mkdir( $backup_dir );
 
-		$this->backup_site_details( $backup_dir );
+		$this->dash_backup_metadata = $this->backup_site_details( $backup_dir );
 
 		switch ( $this->site_data['site_type'] ) {
 			case 'html':
@@ -56,7 +99,42 @@ class Site_Backup_Restore {
 		$this->fs->remove( $backup_dir );
 
 		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+
+		// Mark backup as completed and send success callback
+		$this->dash_backup_completed = true;
+		if ( $this->dash_auth_enabled ) {
+			$api_success = $this->send_dash_success_callback(
+				$this->dash_api_url,
+				$this->dash_backup_id,
+				$this->dash_verify_token,
+				$this->dash_backup_metadata
+			);
+
+			// Only cleanup old backups if API callback succeeded
+			// If API failed, rollback the newly uploaded backup
+			if ( $api_success ) {
+				$this->cleanup_old_backups();
+			} else {
+				$this->rollback_failed_backup();
+			}
+		}
+
 		delem_log( 'site backup end' );
+	}
+
+	/**
+	 * Shutdown handler to send failure callback to EasyDash if backup didn't complete.
+	 * This is called when script terminates (including via EE::error which calls exit).
+	 */
+	public function dash_shutdown_handler() {
+		// Only send failure callback if dash auth was enabled and backup didn't complete
+		if ( $this->dash_auth_enabled && ! $this->dash_backup_completed ) {
+			$this->send_dash_failure_callback(
+				$this->dash_api_url,
+				$this->dash_backup_id,
+				$this->dash_verify_token
+			);
+		}
 	}
 
 	public function restore( $args, $assoc_args = [] ) {
@@ -321,7 +399,7 @@ class Site_Backup_Restore {
 
 		$conf_dir       = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/config';
 		$backup_file    = $backup_dir . '/conf.zip';
-		$backup_command = sprintf( 'cd %s && 7z a -snl -mx=1 %s nginx', $conf_dir, $backup_file );
+		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s nginx', $conf_dir, $backup_file );
 
 		EE::exec( $backup_command );
 	}
@@ -331,7 +409,7 @@ class Site_Backup_Restore {
 
 		$conf_dir       = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/config';
 		$backup_file    = $backup_dir . '/conf.zip';
-		$backup_command = sprintf( 'cd %s && 7z u -snl -mx=1 %s php', $conf_dir, $backup_file );
+		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s php', $conf_dir, $backup_file );
 
 		EE::exec( $backup_command );
 	}
@@ -631,9 +709,42 @@ class Site_Backup_Restore {
 		EE::debug( 'Free space: ' . $free_space );
 
 		if ( $site_size > $free_space ) {
-			EE::error( 'Not enough disk space to take backup. Please free up some space and try again.' );
+			$error_message = $this->build_disk_space_error_message( 'backup', $site_size, $free_space );
+
 			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			EE::error( $error_message );
 		}
+	}
+
+	/**
+	 * Build a disk space error message for backup/restore operations.
+	 *
+	 * @param string $operation   The operation name ('backup' or 'restore').
+	 * @param int $required_space The required disk space in bytes.
+	 * @param int $free_space     The available free space in bytes.
+	 *
+	 * @return string The formatted error message.
+	 */
+	private function build_disk_space_error_message( $operation, $required_space, $free_space ) {
+		$additional_space    = $required_space - $free_space;
+		$required_formatted  = $this->format_bytes( $required_space );
+		$available_formatted = $this->format_bytes( $free_space );
+		$needed_formatted    = $this->format_bytes( $additional_space );
+
+		return sprintf(
+			"Not enough disk space to take %s.\n" .
+			"Required: %s (%s bytes)\n" .
+			"Available: %s (%s bytes)\n" .
+			"Additional space needed: %s (%s bytes)\n" .
+			"Please free up some space and try again.",
+			$operation,
+			$required_formatted,
+			number_format( $required_space ),
+			$available_formatted,
+			number_format( $free_space ),
+			$needed_formatted,
+			number_format( $additional_space )
+		);
 	}
 
 	private function check_and_install( $command, $name ) {
@@ -669,9 +780,32 @@ class Site_Backup_Restore {
 		EE::debug( 'Remote backup size: ' . $remote_size );
 
 		$free_space = disk_free_space( EE_BACKUP_DIR );
+		if ( false === $free_space ) {
+			EE::error( 'Unable to determine free disk space for backup directory.' );
+		}
 
 		if ( $remote_size > $free_space ) {
-			EE::error( 'Not enough disk space to restore backup. Please free up some space and try again.' );
+			$required_space      = $remote_size;
+			$additional_space    = $required_space - $free_space;
+			$required_formatted  = $this->format_bytes( $required_space );
+			$available_formatted = $this->format_bytes( $free_space );
+			$needed_formatted    = $this->format_bytes( $additional_space );
+
+			$error_message = sprintf(
+				"Not enough disk space to restore backup.\n" .
+				"Required: %s (%s bytes)\n" .
+				"Available: %s (%s bytes)\n" .
+				"Additional space needed: %s (%s bytes)\n" .
+				"Please free up some space and try again.",
+				$required_formatted,
+				number_format( $required_space ),
+				$available_formatted,
+				number_format( $free_space ),
+				$needed_formatted,
+				number_format( $additional_space )
+			);
+
+			EE::error( $error_message );
 		}
 
 
@@ -727,6 +861,18 @@ class Site_Backup_Restore {
 		EE::exec( $chown_command );
 	}
 
+
+	private function format_bytes( $bytes, $precision = 2 ) {
+		$units = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+
+		$bytes = max( $bytes, 0 );
+		$pow   = floor( ( $bytes ? log( $bytes ) : 0 ) / log( 1024 ) );
+		$pow   = min( $pow, count( $units ) - 1 );
+
+		$size = $bytes / pow( 1024, $pow );
+
+		return round( $size, $precision ) . ' ' . $units[ $pow ];
+	}
 
 	private function dir_size( string $directory ) {
 		$size = 0;
@@ -858,23 +1004,13 @@ class Site_Backup_Restore {
 
 		$this->rclone_config_path = $this->get_rclone_config_path();
 
-		$no_of_backups = intval( get_config_value( 'no-of-backups', 7 ) );
-
 		$backups   = $this->list_remote_backups( true );
 		$timestamp = time() . '_' . date( 'Y-m-d-H-i-s' );
 
 		if ( ! empty( $backups ) ) {
 
-			if ( $upload ) {
-				if ( count( $backups ) > $no_of_backups ) {
-					$backups_to_delete = array_slice( $backups, $no_of_backups );
-					foreach ( $backups_to_delete as $backup ) {
-						EE::log( 'Deleting old backup: ' . $backup );
-						EE::launch( sprintf( 'rclone purge %s/%s', $this->rclone_config_path, $backup ) );
-					}
-				}
-			} else {
-
+			if ( ! $upload ) {
+				// For restore: use the most recent backup
 				$timestamp = $backups[0];
 				EE::log( 'Restoring from backup: ' . $timestamp );
 			}
@@ -929,6 +1065,76 @@ class Site_Backup_Restore {
 			$output      = EE::launch( $command );
 			$remote_path = $output->stdout;
 			EE::success( 'Backup uploaded to remote storage. Remote path: ' . $remote_path );
+
+			// Store the new backup path for potential rollback (only when using dash-auth)
+			if ( $this->dash_auth_enabled ) {
+				$this->dash_new_backup_path = $this->get_remote_path();
+			}
+
+			// Only delete old backups immediately if NOT using dash-auth
+			// If using dash-auth, cleanup happens after API callback succeeds
+			if ( ! $this->dash_auth_enabled ) {
+				$this->cleanup_old_backups();
+			}
+		}
+	}
+
+	/**
+	 * Delete old backups from remote storage after successful upload.
+	 * Keeps only the configured number of most recent backups.
+	 */
+	private function cleanup_old_backups() {
+		$no_of_backups = intval( get_config_value( 'no-of-backups', 7 ) );
+
+		// Get fresh list of backups after the new upload
+		$backups = $this->list_remote_backups( true );
+
+		if ( empty( $backups ) ) {
+			return;
+		}
+
+		// Check if we have more backups than allowed
+		if ( count( $backups ) > ( $no_of_backups + 1 ) ) {
+			$backups_to_delete = array_slice( $backups, $no_of_backups );
+			
+			EE::log( sprintf( 'Cleaning up old backups. Keeping %d most recent backups.', $no_of_backups ) );
+			foreach ( $backups_to_delete as $backup ) {
+				EE::log( 'Deleting old backup: ' . $backup );
+				$result = EE::launch( sprintf( 'rclone purge %s/%s', escapeshellarg( $this->get_rclone_config_path() ), escapeshellarg( $backup ) ) );
+				if ( $result->return_code ) {
+					EE::warning( 'Failed to delete old backup: ' . $backup );
+				} else {
+					EE::debug( 'Successfully deleted old backup: ' . $backup );
+				}
+			}
+			EE::success( sprintf( 'Cleaned up %d old backup(s).', count( $backups_to_delete ) ) );
+		} else {
+			EE::debug( sprintf( 'No cleanup needed. Current backups: %d, Maximum allowed: %d', count( $backups ), $no_of_backups ) );
+		}
+	}
+
+	/**
+	 * Rollback (delete) the newly uploaded backup when EasyDash API callback fails.
+	 * This prevents orphaned backups in remote storage that aren't tracked by EasyDash.
+	 */
+	private function rollback_failed_backup() {
+		if ( empty( $this->dash_new_backup_path ) ) {
+			EE::warning( 'Cannot rollback backup: backup path not found.' );
+			return;
+		}
+
+		EE::warning( 'EasyDash API callback failed. Rolling back newly uploaded backup...' );
+		EE::log( 'Deleting unregistered backup: ' . $this->dash_new_backup_path );
+
+		$result = EE::launch( sprintf( 'rclone purge %s', escapeshellarg( $this->dash_new_backup_path ) ) );
+
+		if ( $result->return_code ) {
+			EE::warning( sprintf(
+				'Failed to delete backup from remote storage. Please manually delete: %s',
+				$this->dash_new_backup_path
+			) );
+		} else {
+			EE::success( 'Successfully removed unregistered backup from remote storage.' );
 		}
 	}
 
@@ -973,5 +1179,183 @@ class Site_Backup_Restore {
 			$restore_command = sprintf( 'rsync -a %s/php/php/conf.d/custom.ini %s/config/php/php/conf.d/custom.ini', $backup_dir, EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
 			EE::exec( $restore_command );
 		}
+	}
+
+	/**
+	 * Send success callback to EasyDash API after successful backup.
+	 *
+	 * @param string $ed_api_url      The EasyDash API URL.
+	 * @param string $backup_id       The backup ID.
+	 * @param string $verify_token    The verification token.
+	 * @param array  $backup_metadata The backup metadata.
+	 * @return bool True if API request succeeded, false otherwise.
+	 */
+	private function send_dash_success_callback( $ed_api_url, $backup_id, $verify_token, $backup_metadata ) {
+		$endpoint = rtrim( $ed_api_url, '/' ) . '/easydash.easydash.doctype.site_backup.site_backup.on_ee_backup_success';
+
+		// Debug: Log the values being used for callback
+		EE::debug( 'Sending success callback with backup_id: ' . $backup_id );
+		EE::debug( 'Sending success callback with verify_token: ' . $verify_token );
+
+		// Build metadata for the API call - always include all fields
+		$metadata = [
+			'post_count'    => $this->sanitize_count( $backup_metadata['post_count'] ?? 0 ),
+			'theme_count'   => $this->sanitize_count( $backup_metadata['theme_count'] ?? 0 ),
+			'user_count'    => $this->sanitize_count( $backup_metadata['user_count'] ?? 0 ),
+			'plugin_count'  => $this->sanitize_count( $backup_metadata['plugin_count'] ?? 0 ),
+			'wp_version'    => $backup_metadata['wp_version'] ?? '',
+			'comment_count' => $this->sanitize_count( $backup_metadata['comment_count'] ?? 0 ),
+			'page_count'    => $this->sanitize_count( $backup_metadata['page_count'] ?? 0 ),
+			'upload_count'  => $this->sanitize_count( $backup_metadata['upload_count'] ?? 0 ),
+			'site_type'     => $backup_metadata['site_type'] ?? 'html',
+			'remote_path'   => $backup_metadata['remote_path'] ?? '',
+		];
+
+		$payload = [
+			'site'     => $this->site_data['site_url'],
+			'backup'   => $backup_id,
+			'verify'   => $verify_token,
+			'metadata' => $metadata,
+		];
+
+		EE::debug( 'Payload being sent: ' . json_encode( $payload ) );
+
+		return $this->send_dash_request( $endpoint, $payload );
+	}
+
+	/**
+	 * Send failure callback to EasyDash API after failed backup.
+	 *
+	 * @param string $ed_api_url   The EasyDash API URL.
+	 * @param string $backup_id    The backup ID.
+	 * @param string $verify_token The verification token.
+	 */
+	private function send_dash_failure_callback( $ed_api_url, $backup_id, $verify_token ) {
+		$endpoint = rtrim( $ed_api_url, '/' ) . '/easydash.easydash.doctype.site_backup.site_backup.on_ee_backup_failure';
+
+		$payload = [
+			'site'   => $this->site_data['site_url'],
+			'backup' => $backup_id,
+			'verify' => $verify_token,
+		];
+
+		$this->send_dash_request( $endpoint, $payload );
+	}
+
+	/**
+	 * Send HTTP request to EasyEngine Dashboard API with retry logic for 5xx errors and connection errors.
+	 *
+	 * @param string $endpoint The API endpoint URL.
+	 * @param array  $payload  The request payload.
+	 * @return bool True if request succeeded, false otherwise.
+	 */
+	private function send_dash_request( $endpoint, $payload ) {
+		$max_retries = 3;
+		$retry_delay = 300; // 5 minutes in seconds
+		$max_attempts = $max_retries + 1; // 1 initial attempt + 3 retries = 4 total
+		$attempt = 1;
+
+		while ( $attempt <= $max_attempts ) {
+			$ch = curl_init( $endpoint );
+
+			curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
+			curl_setopt( $ch, CURLOPT_POST, true );
+			curl_setopt( $ch, CURLOPT_POSTFIELDS, json_encode( $payload ) );
+			curl_setopt( $ch, CURLOPT_HTTPHEADER, [
+				'Content-Type: application/json',
+			] );
+			curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
+
+			$response = curl_exec( $ch );
+			$http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
+			$error = curl_error( $ch );
+
+			curl_close( $ch );
+
+			// Normalize response for safe string concatenation
+			$response_text = ( false === $response ) ? 'No response received' : $response;
+
+			// Check if request was successful
+			if ( ! $error && $http_code >= 200 && $http_code < 300 ) {
+				EE::log( 'EasyEngine Dashboard callback sent successfully.' );
+				EE::debug( 'EasyEngine Dashboard response: ' . $response_text );
+				return true; // Success
+			}
+
+			// Determine if this is a retryable error
+			$is_5xx_error = $http_code >= 500 && $http_code < 600;
+			$is_connection_error = ! empty( $error ) || $http_code === 0;
+			$should_retry = ( $is_5xx_error || $is_connection_error ) && $attempt < $max_attempts;
+
+			if ( $should_retry ) {
+				// Retry on 5xx errors or connection errors
+				if ( $is_5xx_error ) {
+					EE::warning( sprintf(
+						'EasyEngine Dashboard callback failed with HTTP %d (attempt %d/%d). Retrying in %d seconds...',
+						$http_code,
+						$attempt,
+						$max_attempts,
+						$retry_delay
+					) );
+					EE::debug( 'Response: ' . $response_text );
+				} else {
+					// Connection error
+					$error_message = ! empty( $error ) ? $error : 'No HTTP response received';
+					EE::warning( sprintf(
+						'EasyEngine Dashboard connection error: %s (attempt %d/%d). Retrying in %d seconds...',
+						$error_message,
+						$attempt,
+						$max_attempts,
+						$retry_delay
+					) );
+				}
+				sleep( $retry_delay );
+				$attempt++; // Increment at end of loop iteration
+			} else {
+				// Either not a retryable error, or we've exhausted all retries
+				if ( $error ) {
+					// cURL error occurred after all retries (network, DNS, timeout, etc.)
+					EE::warning( sprintf(
+						'Failed to send callback to EasyEngine Dashboard after %d retries: %s',
+						$max_retries,
+						$error
+					) );
+				} elseif ( $is_5xx_error ) {
+					// 5xx error after all retries exhausted
+					EE::warning( sprintf(
+						'EasyEngine Dashboard callback failed after %d retries with HTTP %d. Response: %s',
+						$max_retries,
+						$http_code,
+						$response_text
+					) );
+				} elseif ( $http_code === 0 ) {
+					// No HTTP response received after all retries
+					EE::warning( sprintf(
+						'EasyEngine Dashboard callback failed after %d retries: No HTTP response received. Response: %s',
+						$max_retries,
+						$response_text
+					) );
+				} else {
+					// 4xx or other HTTP error codes that shouldn't be retried
+					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response_text );
+				}
+				return false; // Failure
+			}
+		}
+
+		return false; // Should never reach here, but return false as fallback
+	}
+
+	/**
+	 * Sanitize count value for API payload.
+	 *
+	 * @param mixed $value The value to sanitize.
+	 * @return int The sanitized integer value.
+	 */
+	private function sanitize_count( $value ) {
+		if ( $value === '-' || ! is_numeric( $value ) ) {
+			return 0;
+		}
+		return intval( $value );
 	}
 }
