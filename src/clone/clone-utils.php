@@ -137,10 +137,13 @@ function copy_site_files( Site $source, Site $destination, array $sync_type ) {
 
 	$exclude = '--exclude \'/wp-config.php\'';
 
-	if ( ! empty( $destination_public_path ) ) {
-		$exclude .= ' --exclude \'' . $destination_public_path . '/wp-config.php\'';
+	// Exclude wp-config.php from source's custom public directory structure.
+	// rsync --exclude patterns are relative to the source directory being synced.
+	if ( ! empty( $source_public_path ) ) {
+		$exclude .= ' --exclude \'' . $source_public_path . '/wp-config.php\'';
 
-		$parent_dir = dirname( $destination_public_path );
+		// Also exclude wp-config.php one level up from public directory (WordPress convention).
+		$parent_dir = dirname( $source_public_path );
 		if ( $parent_dir !== '.' && $parent_dir !== '/' ) {
 			$exclude .= ' --exclude \'' . $parent_dir . '/wp-config.php\'';
 		}
