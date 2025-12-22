@@ -11,6 +11,18 @@ use function EE\Site\Utils\get_site_info;
 
 class Site_Backup_Restore {
 
+	// Error type constants for categorized error reporting
+	const ERROR_TYPE_VALIDATION = 'validation_error';       // Invalid input
+	const ERROR_TYPE_CONFIG = 'configuration_error';        // Missing config
+	const ERROR_TYPE_FILESYSTEM = 'filesystem_error';       // File/dir issues
+	const ERROR_TYPE_NETWORK = 'network_error';             // Upload/download
+	const ERROR_TYPE_DATABASE = 'database_error';           // DB operations
+	const ERROR_TYPE_DISK_SPACE = 'disk_space_error';       // Insufficient space
+	const ERROR_TYPE_LOCK = 'lock_error';                   // Concurrent operation
+	const ERROR_TYPE_FATAL = 'fatal_error';                 // PHP fatal
+	const ERROR_TYPE_INTERRUPTED = 'interrupted';           // Killed/stopped
+	const ERROR_TYPE_UNKNOWN = 'unknown_error';             // Unexpected
+
 	private $fs;
 	public $site_data;
 	private $rclone_config_path;
@@ -23,6 +35,11 @@ class Site_Backup_Restore {
 	private $dash_backup_metadata;
 	private $dash_backup_completed = false;
 	private $dash_new_backup_path; // Track new backup path for potential rollback
+
+	// Error tracking for EasyDash failure callbacks
+	private $dash_error_message = '';
+	private $dash_error_type = 'unknown';
+	private $dash_error_code = 0;
 
 	public function __construct() {
 		$this->fs = new Filesystem();
@@ -48,11 +65,16 @@ class Site_Backup_Restore {
 			// Debug: Log the raw dash_auth value received
 			EE::debug( 'Received --dash-auth value: ' . $dash_auth );
 
-			// Parse backup-id:backup-verification-token format
-			$auth_parts = explode( ':', $dash_auth, 2 );
-			if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
-				EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
-			}
+		// Parse backup-id:backup-verification-token format
+		$auth_parts = explode( ':', $dash_auth, 2 );
+		if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
+			$this->capture_error(
+				'Invalid --dash-auth format. Expected: backup-id:backup-verification-token',
+				self::ERROR_TYPE_VALIDATION,
+				1001
+			);
+			EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
+		}
 
 			// Check for ed-api-url configuration
 			$ed_api_url = get_config_value( 'ed-api-url', '' );
@@ -92,6 +114,11 @@ class Site_Backup_Restore {
 				$this->backup_php_wp( $backup_dir );
 				break;
 			default:
+				$this->capture_error(
+					sprintf( 'Backup is not supported for site type: %s', $this->site_data['site_type'] ),
+					self::ERROR_TYPE_VALIDATION,
+					1003
+				);
 				EE::error( 'Backup is not supported for this site type.' );
 		}
 
@@ -125,15 +152,69 @@ class Site_Backup_Restore {
 	/**
 	 * Shutdown handler to send failure callback to EasyDash if backup didn't complete.
 	 * This is called when script terminates (including via EE::error which calls exit).
+	 * 
+	 * Automatically captures fatal errors and interrupted processes if no error was
+	 * explicitly captured during backup execution.
 	 */
 	public function dash_shutdown_handler() {
 		// Only send failure callback if dash auth was enabled and backup didn't complete
 		if ( $this->dash_auth_enabled && ! $this->dash_backup_completed ) {
+
+			// If no error was captured yet, try to capture shutdown error
+			if ( empty( $this->dash_error_message ) ) {
+				$last_error = error_get_last();
+
+				// Check if this was a fatal PHP error
+				if ( $last_error && in_array( $last_error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ] ) ) {
+					$this->capture_error(
+						sprintf(
+							'PHP Fatal Error: %s in %s:%d',
+							$last_error['message'],
+							basename( $last_error['file'] ),
+							$last_error['line']
+						),
+						self::ERROR_TYPE_FATAL,
+						$last_error['type']
+					);
+				} else {
+					// Script was killed, interrupted, or failed unexpectedly
+					$this->capture_error(
+						'Backup process was interrupted or killed unexpectedly',
+						self::ERROR_TYPE_INTERRUPTED,
+						0
+					);
+				}
+			}
+
 			$this->send_dash_failure_callback(
 				$this->dash_api_url,
 				$this->dash_backup_id,
 				$this->dash_verify_token
 			);
+		}
+	}
+
+	/**
+	 * Capture error details for EasyDash failure callback.
+	 * Stores error information to be sent when backup fails.
+	 *
+	 * @param string $message Error message describing what went wrong.
+	 * @param string $type    Error type category (use ERROR_TYPE_* constants).
+	 * @param int    $code    Error code for additional context (optional).
+	 */
+	private function capture_error( $message, $type = self::ERROR_TYPE_UNKNOWN, $code = 0 ) {
+		// Only capture the first error (root cause)
+		if ( empty( $this->dash_error_message ) ) {
+			$this->dash_error_message = $message;
+			$this->dash_error_type    = $type;
+			$this->dash_error_code    = $code;
+
+			EE::debug( sprintf(
+				'Captured error for EasyDash: [%s] %s (code: %d)',
+				$type,
+				$message,
+				$code
+			) );
 		}
 	}
 
@@ -659,6 +740,11 @@ class Site_Backup_Restore {
 		$return_code = EE::exec( $command );
 
 		if ( ! $return_code ) {
+			$this->capture_error(
+				'rclone is not installed',
+				self::ERROR_TYPE_CONFIG,
+				2001
+			);
 			EE::error( 'rclone is not installed. Please install rclone for backup/restore: https://rclone.org/downloads/#script-download-and-install' );
 		}
 
@@ -669,6 +755,11 @@ class Site_Backup_Restore {
 		$rclone_path = explode( ':', $rclone_path )[0] . ':';
 
 		if ( strpos( $output->stdout, $rclone_path ) === false ) {
+			$this->capture_error(
+				'rclone backend easyengine does not exist',
+				self::ERROR_TYPE_CONFIG,
+				2002
+			);
 			EE::error( 'rclone backend easyengine does not exist. Please create it using `rclone config`' );
 		}
 
@@ -686,6 +777,11 @@ class Site_Backup_Restore {
 		$lock_file = EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock';
 
 		if ( $this->fs->exists( $lock_file ) ) {
+			$this->capture_error(
+				'Another backup/restore process is already running for this site',
+				self::ERROR_TYPE_LOCK,
+				2003
+			);
 			EE::error( 'Another backup/restore process is running. Please wait for it to complete.' );
 		} else {
 			$this->fs->dumpFile( $lock_file, 'lock' );
@@ -710,6 +806,16 @@ class Site_Backup_Restore {
 
 		if ( $site_size > $free_space ) {
 			$error_message = $this->build_disk_space_error_message( 'backup', $site_size, $free_space );
+
+			$this->capture_error(
+				sprintf(
+					'Insufficient disk space for backup. Required: %s, Available: %s',
+					$this->format_bytes( $site_size ),
+					$this->format_bytes( $free_space )
+				),
+				self::ERROR_TYPE_DISK_SPACE,
+				3001
+			);
 
 			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
 			EE::error( $error_message );
@@ -751,6 +857,11 @@ class Site_Backup_Restore {
 		$status = EE::exec( "command -v $command" );
 		if ( ! $status ) {
 			if ( IS_DARWIN ) {
+				$this->capture_error(
+					sprintf( '%s is not installed (required for backup/restore)', $name ),
+					self::ERROR_TYPE_CONFIG,
+					2010
+				);
 				EE::error( "$name is not installed. Please install $name for backup/restore. You can install it using `brew install $name`." );
 			} else {
 				$status = EE::exec( 'apt-get --version' );
@@ -758,6 +869,11 @@ class Site_Backup_Restore {
 					EE::exec( 'apt-get update' );
 					EE::exec( "apt-get install -y $name" );
 				} else {
+					$this->capture_error(
+						sprintf( '%s is not installed and could not be auto-installed (apt-get not available)', $name ),
+						self::ERROR_TYPE_CONFIG,
+						2011
+					);
 					EE::error( "$name is not installed. Please install $name for backup/restore." );
 				}
 			}
@@ -1058,6 +1174,11 @@ class Site_Backup_Restore {
 		$output  = EE::launch( $command );
 
 		if ( $output->return_code ) {
+			$this->capture_error(
+				'Failed to upload backup to remote storage via rclone',
+				self::ERROR_TYPE_NETWORK,
+				4001
+			);
 			EE::error( 'Error uploading backup to remote storage.' );
 		} else {
 
@@ -1225,6 +1346,7 @@ class Site_Backup_Restore {
 
 	/**
 	 * Send failure callback to EasyDash API after failed backup.
+	 * Includes error details (message, type, code) for debugging and user feedback.
 	 *
 	 * @param string $ed_api_url   The EasyDash API URL.
 	 * @param string $backup_id    The backup ID.
@@ -1234,10 +1356,19 @@ class Site_Backup_Restore {
 		$endpoint = rtrim( $ed_api_url, '/' ) . '/easydash.easydash.doctype.site_backup.site_backup.on_ee_backup_failure';
 
 		$payload = [
-			'site'   => $this->site_data['site_url'],
-			'backup' => $backup_id,
-			'verify' => $verify_token,
+			'site'          => $this->site_data['site_url'],
+			'backup'        => $backup_id,
+			'verify'        => $verify_token,
+			'error_message' => $this->dash_error_message ?: 'Unknown error occurred',
+			'error_type'    => $this->dash_error_type,
+			'error_code'    => $this->dash_error_code,
 		];
+
+		EE::debug( 'Sending failure callback with error details: ' . json_encode( [
+			'error_message' => $payload['error_message'],
+			'error_type'    => $payload['error_type'],
+			'error_code'    => $payload['error_code'],
+		] ) );
 
 		$this->send_dash_request( $endpoint, $payload );
 	}
