@@ -132,21 +132,37 @@ function copy_site_certs( Site $source, Site $destination ) {
 
 function copy_site_files( Site $source, Site $destination, array $sync_type ) {
 
-	$exclude            = '--exclude \'/wp-config.php\'';
-	$source_public_path = str_replace( '/var/www/htdocs', '', $source->site_details['site_container_fs_path'] );
-	$uploads_path       = $source_public_path . '/wp-content/uploads';
-	$uploads_path_share = '/shared/wp-content/uploads';
+	$source_public_path      = str_replace( '/var/www/htdocs', '', $source->site_details['site_container_fs_path'] );
+	$destination_public_path = str_replace( '/var/www/htdocs', '', $destination->site_details['site_container_fs_path'] );
+
+	$exclude = '--exclude \'/wp-config.php\'';
+
+	// Exclude wp-config.php from source's custom public directory structure.
+	// rsync --exclude patterns are relative to the source directory being synced.
+	if ( ! empty( $source_public_path ) ) {
+		$exclude .= ' --exclude \'' . $source_public_path . '/wp-config.php\'';
+
+		// Also exclude wp-config.php one level up from public directory (WordPress convention).
+		$parent_dir = dirname( $source_public_path );
+		if ( $parent_dir !== '.' && $parent_dir !== '/' ) {
+			$exclude .= ' --exclude \'' . $parent_dir . '/wp-config.php\'';
+		}
+	}
+
+	$source_uploads_path      = $source_public_path . '/wp-content/uploads';
+	$destination_uploads_path = $destination_public_path . '/wp-content/uploads';
+	$uploads_path_share       = '/shared/wp-content/uploads';
 
 	$source_dir      = remove_trailing_slash( $source->get_site_root_dir() );
 	$destination_dir = remove_trailing_slash( $destination->get_site_root_dir() );
 
 	if ( $sync_type['uploads'] && ! $sync_type['files'] ) {
-		$source_dir      .= $uploads_path;
-		$destination_dir .= $uploads_path;
+		$source_dir      .= $source_uploads_path;
+		$destination_dir .= $destination_uploads_path;
 	}
 
 	if ( $sync_type['files'] && ! $sync_type['uploads'] ) {
-		$exclude .= ' --exclude \'' . $uploads_path . '\'';
+		$exclude .= ' --exclude \'' . $source_uploads_path . '\'';
 		$exclude .= ' --exclude \'' . $uploads_path_share . '\'';
 	}
 
