@@ -65,16 +65,16 @@ class Site_Backup_Restore {
 			// Debug: Log the raw dash_auth value received
 			EE::debug( 'Received --dash-auth value: ' . $dash_auth );
 
-		// Parse backup-id:backup-verification-token format
-		$auth_parts = explode( ':', $dash_auth, 2 );
-		if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
-			$this->capture_error(
-				'Invalid --dash-auth format. Expected: backup-id:backup-verification-token',
-				self::ERROR_TYPE_VALIDATION,
-				1001
-			);
-			EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
-		}
+			// Parse backup-id:backup-verification-token format
+			$auth_parts = explode( ':', $dash_auth, 2 );
+			if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
+				$this->capture_error(
+					'Invalid --dash-auth format. Expected: backup-id:backup-verification-token',
+					self::ERROR_TYPE_VALIDATION,
+					1001
+				);
+				EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
+			}
 
 			// Check for ed-api-url configuration
 			$ed_api_url = get_config_value( 'ed-api-url', '' );
@@ -117,7 +117,7 @@ class Site_Backup_Restore {
 				$this->capture_error(
 					sprintf( 'Backup is not supported for site type: %s', $this->site_data['site_type'] ),
 					self::ERROR_TYPE_VALIDATION,
-					1003
+					1002
 				);
 				EE::error( 'Backup is not supported for this site type.' );
 		}
@@ -152,7 +152,7 @@ class Site_Backup_Restore {
 	/**
 	 * Shutdown handler to send failure callback to EasyDash if backup didn't complete.
 	 * This is called when script terminates (including via EE::error which calls exit).
-	 * 
+	 *
 	 * Automatically captures fatal errors and interrupted processes if no error was
 	 * explicitly captured during backup execution.
 	 */
@@ -165,7 +165,13 @@ class Site_Backup_Restore {
 				$last_error = error_get_last();
 
 				// Check if this was a fatal PHP error
-				if ( $last_error && in_array( $last_error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ] ) ) {
+				if ( $last_error && in_array( $last_error['type'], [
+						E_ERROR,
+						E_PARSE,
+						E_CORE_ERROR,
+						E_COMPILE_ERROR,
+						E_USER_ERROR
+					] ) ) {
 					$this->capture_error(
 						sprintf(
 							'PHP Fatal Error: %s in %s:%d',
@@ -174,14 +180,14 @@ class Site_Backup_Restore {
 							$last_error['line']
 						),
 						self::ERROR_TYPE_FATAL,
-						$last_error['type']
+						5001
 					);
 				} else {
 					// Script was killed, interrupted, or failed unexpectedly
 					$this->capture_error(
 						'Backup process was interrupted or killed unexpectedly',
 						self::ERROR_TYPE_INTERRUPTED,
-						0
+						6000
 					);
 				}
 			}
@@ -200,7 +206,7 @@ class Site_Backup_Restore {
 	 *
 	 * @param string $message Error message describing what went wrong.
 	 * @param string $type    Error type category (use ERROR_TYPE_* constants).
-	 * @param int    $code    Error code for additional context (optional).
+	 * @param int $code       Error code for additional context (optional).
 	 */
 	private function capture_error( $message, $type = self::ERROR_TYPE_UNKNOWN, $code = 0 ) {
 		// Only capture the first error (root cause)
@@ -425,7 +431,17 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/' . $this->site_data['site_url'] . '.zip';
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s .', $site_dir, $backup_file );
 
-		EE::exec( $backup_command );
+		$result = EE::exec( $backup_command );
+
+		// Check if archive was created successfully
+		if ( ! $result || ! $this->fs->exists( $backup_file ) ) {
+			$this->capture_error(
+				'Failed to create site backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+		}
 
 		return $backup_file;
 	}
@@ -454,7 +470,16 @@ class Site_Backup_Restore {
 		}
 
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s wp-config.php', $site_dir . '/../', $backup_file );
-		EE::exec( $backup_command );
+		$result         = EE::exec( $backup_command );
+
+		if ( ! $result ) {
+			$this->capture_error(
+				'Failed to create WordPress content backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+		}
 
 		// meta.json path
 		$meta_file = $backup_dir . '/meta.json';
@@ -472,6 +497,16 @@ class Site_Backup_Restore {
 			EE::exec( $backup_command );
 		}
 
+		// Final check that backup file was created successfully
+		if ( ! $this->fs->exists( $backup_file ) ) {
+			$this->capture_error(
+				'Failed to create WordPress content backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+		}
+
 		return $backup_file;
 	}
 
@@ -482,7 +517,16 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/conf.zip';
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s nginx', $conf_dir, $backup_file );
 
-		EE::exec( $backup_command );
+		$result = EE::exec( $backup_command );
+
+		if ( ! $result ) {
+			$this->capture_error(
+				'Failed to create nginx configuration backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create nginx configuration backup archive. Please check disk space and file permissions.' );
+		}
 	}
 
 	private function backup_php_conf( $backup_dir ) {
@@ -492,7 +536,16 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/conf.zip';
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s php', $conf_dir, $backup_file );
 
-		EE::exec( $backup_command );
+		$result = EE::exec( $backup_command );
+
+		if ( ! $result ) {
+			$this->capture_error(
+				'Failed to create PHP configuration backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create PHP configuration backup archive. Please check disk space and file permissions.' );
+		}
 	}
 
 	private function backup_html( $backup_dir ) {
@@ -541,10 +594,31 @@ class Site_Backup_Restore {
 		$options        = [ 'skip-tty' => true ];
 
 		EE::run_command( $args, $assoc_args, $options );
-		EE::exec( sprintf( 'mv %s %s', EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/app/htdocs/' . $sql_filename, $sql_file ) );
+
+		$sql_dump_path = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/app/htdocs/' . $sql_filename;
+
+		// Check if database dump was created successfully
+		if ( ! $this->fs->exists( $sql_dump_path ) ) {
+			$this->capture_error(
+				sprintf( 'Database backup failed for database: %s', $db_name ),
+				self::ERROR_TYPE_DATABASE,
+				4002
+			);
+			EE::error( 'Database backup failed. Please check database credentials and connectivity.' );
+		}
+
+		EE::exec( sprintf( 'mv %s %s', $sql_dump_path, $sql_file ) );
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s sql', $backup_dir, $backup_file );
 
-		EE::exec( $backup_command );
+		$result = EE::exec( $backup_command );
+		if ( ! $result ) {
+			$this->capture_error(
+				'Failed to compress database backup into archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to compress database backup. Please check disk space.' );
+		}
 		$this->fs->remove( $backup_dir . '/sql' );
 	}
 
@@ -751,16 +825,17 @@ class Site_Backup_Restore {
 		$command = 'rclone listremotes';
 		$output  = EE::launch( $command );
 
-		$rclone_path = get_config_value( 'rclone-path', 'easyengine:easyengine' );
-		$rclone_path = explode( ':', $rclone_path )[0] . ':';
+		$rclone_path    = get_config_value( 'rclone-path', 'easyengine:easyengine' );
+		$rclone_backend = explode( ':', $rclone_path )[0];
+		$rclone_path    = $rclone_backend . ':';
 
 		if ( strpos( $output->stdout, $rclone_path ) === false ) {
 			$this->capture_error(
-				'rclone backend easyengine does not exist',
+				sprintf( 'rclone backend "%s" is not configured. Please create it using `rclone config`', $rclone_backend ),
 				self::ERROR_TYPE_CONFIG,
 				2002
 			);
-			EE::error( 'rclone backend easyengine does not exist. Please create it using `rclone config`' );
+			EE::error( sprintf( 'rclone backend "%s" does not exist. Please create it using `rclone config`', $rclone_backend ) );
 		}
 
 		$this->check_and_install( 'zip', 'zip' );
@@ -1217,7 +1292,7 @@ class Site_Backup_Restore {
 		// Check if we have more backups than allowed
 		if ( count( $backups ) > ( $no_of_backups + 1 ) ) {
 			$backups_to_delete = array_slice( $backups, $no_of_backups );
-			
+
 			EE::log( sprintf( 'Cleaning up old backups. Keeping %d most recent backups.', $no_of_backups ) );
 			foreach ( $backups_to_delete as $backup ) {
 				EE::log( 'Deleting old backup: ' . $backup );
@@ -1241,6 +1316,7 @@ class Site_Backup_Restore {
 	private function rollback_failed_backup() {
 		if ( empty( $this->dash_new_backup_path ) ) {
 			EE::warning( 'Cannot rollback backup: backup path not found.' );
+
 			return;
 		}
 
@@ -1305,10 +1381,11 @@ class Site_Backup_Restore {
 	/**
 	 * Send success callback to EasyDash API after successful backup.
 	 *
-	 * @param string $ed_api_url      The EasyDash API URL.
-	 * @param string $backup_id       The backup ID.
-	 * @param string $verify_token    The verification token.
-	 * @param array  $backup_metadata The backup metadata.
+	 * @param string $ed_api_url     The EasyDash API URL.
+	 * @param string $backup_id      The backup ID.
+	 * @param string $verify_token   The verification token.
+	 * @param array $backup_metadata The backup metadata.
+	 *
 	 * @return bool True if API request succeeded, false otherwise.
 	 */
 	private function send_dash_success_callback( $ed_api_url, $backup_id, $verify_token, $backup_metadata ) {
@@ -1365,10 +1442,10 @@ class Site_Backup_Restore {
 		];
 
 		EE::debug( 'Sending failure callback with error details: ' . json_encode( [
-			'error_message' => $payload['error_message'],
-			'error_type'    => $payload['error_type'],
-			'error_code'    => $payload['error_code'],
-		] ) );
+				'error_message' => $payload['error_message'],
+				'error_type'    => $payload['error_type'],
+				'error_code'    => $payload['error_code'],
+			] ) );
 
 		$this->send_dash_request( $endpoint, $payload );
 	}
@@ -1377,14 +1454,15 @@ class Site_Backup_Restore {
 	 * Send HTTP request to EasyEngine Dashboard API with retry logic for 5xx errors and connection errors.
 	 *
 	 * @param string $endpoint The API endpoint URL.
-	 * @param array  $payload  The request payload.
+	 * @param array $payload   The request payload.
+	 *
 	 * @return bool True if request succeeded, false otherwise.
 	 */
 	private function send_dash_request( $endpoint, $payload ) {
-		$max_retries = 3;
-		$retry_delay = 300; // 5 minutes in seconds
+		$max_retries  = 3;
+		$retry_delay  = 300; // 5 minutes in seconds
 		$max_attempts = $max_retries + 1; // 1 initial attempt + 3 retries = 4 total
-		$attempt = 1;
+		$attempt      = 1;
 
 		while ( $attempt <= $max_attempts ) {
 			$ch = curl_init( $endpoint );
@@ -1397,9 +1475,9 @@ class Site_Backup_Restore {
 			] );
 			curl_setopt( $ch, CURLOPT_TIMEOUT, 30 );
 
-			$response = curl_exec( $ch );
+			$response  = curl_exec( $ch );
 			$http_code = curl_getinfo( $ch, CURLINFO_HTTP_CODE );
-			$error = curl_error( $ch );
+			$error     = curl_error( $ch );
 
 			curl_close( $ch );
 
@@ -1410,13 +1488,14 @@ class Site_Backup_Restore {
 			if ( ! $error && $http_code >= 200 && $http_code < 300 ) {
 				EE::log( 'EasyEngine Dashboard callback sent successfully.' );
 				EE::debug( 'EasyEngine Dashboard response: ' . $response_text );
+
 				return true; // Success
 			}
 
 			// Determine if this is a retryable error
-			$is_5xx_error = $http_code >= 500 && $http_code < 600;
+			$is_5xx_error        = $http_code >= 500 && $http_code < 600;
 			$is_connection_error = ! empty( $error ) || $http_code === 0;
-			$should_retry = ( $is_5xx_error || $is_connection_error ) && $attempt < $max_attempts;
+			$should_retry        = ( $is_5xx_error || $is_connection_error ) && $attempt < $max_attempts;
 
 			if ( $should_retry ) {
 				// Retry on 5xx errors or connection errors
@@ -1470,6 +1549,7 @@ class Site_Backup_Restore {
 					// 4xx or other HTTP error codes that shouldn't be retried
 					EE::warning( 'EasyEngine Dashboard callback returned HTTP ' . $http_code . '. Response: ' . $response_text );
 				}
+
 				return false; // Failure
 			}
 		}
@@ -1481,12 +1561,14 @@ class Site_Backup_Restore {
 	 * Sanitize count value for API payload.
 	 *
 	 * @param mixed $value The value to sanitize.
+	 *
 	 * @return int The sanitized integer value.
 	 */
 	private function sanitize_count( $value ) {
 		if ( $value === '-' || ! is_numeric( $value ) ) {
 			return 0;
 		}
+
 		return intval( $value );
 	}
 }
