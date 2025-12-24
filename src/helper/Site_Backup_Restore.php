@@ -480,7 +480,7 @@ class Site_Backup_Restore {
 		$result         = EE::launch( $backup_command );
 
 		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
-		if ( $result->return_code >= 2 ) {
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create WordPress content backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -499,7 +499,7 @@ class Site_Backup_Restore {
 		$this->fs->remove( $meta_file );
 
 		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
-		if ( $result->return_code >= 2 ) {
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create WordPress content backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -642,7 +642,7 @@ class Site_Backup_Restore {
 		$result = EE::launch( $backup_command );
 
 		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
-		if ( $result->return_code >= 2 ) {
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to compress database backup into archive',
 				self::ERROR_TYPE_FILESYSTEM,
