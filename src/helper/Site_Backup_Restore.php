@@ -419,7 +419,13 @@ class Site_Backup_Restore {
 		if ( $this->fs->exists( $custom_docker_compose_dir ) ) {
 			$custom_docker_compose_dir_archive = $backup_dir . '/user-docker-compose.zip';
 			$archive_command                   = sprintf( 'cd %s && 7z a -mx=1 %s .', $custom_docker_compose_dir, $custom_docker_compose_dir_archive );
-			EE::exec( $archive_command );
+			$result = EE::launch( $archive_command );
+
+			// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+			// This is optional, so we just log a warning instead of failing
+			if ( $result->return_code >= 2 ) {
+				EE::warning( 'Failed to backup custom docker-compose directory. Continuing with backup.' );
+			}
 		}
 	}
 
@@ -431,10 +437,11 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/' . $this->site_data['site_url'] . '.zip';
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s .', $site_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		// Check if archive was created successfully
-		if ( ! $result || ! $this->fs->exists( $backup_file ) ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		// Exit code 1 means warnings (e.g., missing symlink targets) but archive is still created
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create site backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -470,9 +477,10 @@ class Site_Backup_Restore {
 		}
 
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s wp-config.php', $site_dir . '/../', $backup_file );
-		$result         = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		if ( ! $result ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 ) {
 			$this->capture_error(
 				'Failed to create WordPress content backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -486,15 +494,34 @@ class Site_Backup_Restore {
 
 		// Include meta.json in the zip archive (Corrected logic)
 		$backup_command = sprintf( 'cd %s && 7z u -snl -mx=1 %s %s wp-content', $site_dir, $backup_file, $meta_file );
-		EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 		// Remove the file
 		$this->fs->remove( $meta_file );
 
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 ) {
+			$this->capture_error(
+				'Failed to create WordPress content backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+		}
 
 		$uploads_dir = $site_dir . '/wp-content/uploads';
 		if ( is_link( $uploads_dir ) ) {
 			$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s wp-content/uploads', $site_dir, $backup_file );
-			EE::exec( $backup_command );
+			$result = EE::launch( $backup_command );
+
+			// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+			if ( $result->return_code >= 2 ) {
+				$this->capture_error(
+					'Failed to create WordPress content backup archive',
+					self::ERROR_TYPE_FILESYSTEM,
+					3002
+				);
+				EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+			}
 		}
 
 		// Final check that backup file was created successfully
@@ -517,9 +544,10 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/conf.zip';
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s nginx', $conf_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		if ( ! $result ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create nginx configuration backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -536,9 +564,10 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/conf.zip';
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s php', $conf_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		if ( ! $result ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create PHP configuration backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -610,8 +639,10 @@ class Site_Backup_Restore {
 		EE::exec( sprintf( 'mv %s %s', $sql_dump_path, $sql_file ) );
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s sql', $backup_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
-		if ( ! $result ) {
+		$result = EE::launch( $backup_command );
+
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 ) {
 			$this->capture_error(
 				'Failed to compress database backup into archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -619,6 +650,7 @@ class Site_Backup_Restore {
 			);
 			EE::error( 'Failed to compress database backup. Please check disk space.' );
 		}
+
 		$this->fs->remove( $backup_dir . '/sql' );
 	}
 
