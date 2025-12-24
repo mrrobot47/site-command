@@ -419,7 +419,7 @@ class Site_Backup_Restore {
 		if ( $this->fs->exists( $custom_docker_compose_dir ) ) {
 			$custom_docker_compose_dir_archive = $backup_dir . '/user-docker-compose.zip';
 			$archive_command                   = sprintf( 'cd %s && 7z a -mx=1 %s .', $custom_docker_compose_dir, $custom_docker_compose_dir_archive );
-			$result = EE::launch( $archive_command );
+			$result                            = EE::launch( $archive_command );
 
 			// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
 			// This is optional, so we just log a warning instead of failing
@@ -477,7 +477,7 @@ class Site_Backup_Restore {
 		}
 
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s wp-config.php', $site_dir . '/../', $backup_file );
-		$result = EE::launch( $backup_command );
+		$result         = EE::launch( $backup_command );
 
 		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
 		if ( $result->return_code >= 2 ) {
@@ -494,7 +494,7 @@ class Site_Backup_Restore {
 
 		// Include meta.json in the zip archive (Corrected logic)
 		$backup_command = sprintf( 'cd %s && 7z u -snl -mx=1 %s %s wp-content', $site_dir, $backup_file, $meta_file );
-		$result = EE::launch( $backup_command );
+		$result         = EE::launch( $backup_command );
 		// Remove the file
 		$this->fs->remove( $meta_file );
 
@@ -511,7 +511,7 @@ class Site_Backup_Restore {
 		$uploads_dir = $site_dir . '/wp-content/uploads';
 		if ( is_link( $uploads_dir ) ) {
 			$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s wp-content/uploads', $site_dir, $backup_file );
-			$result = EE::launch( $backup_command );
+			$result         = EE::launch( $backup_command );
 
 			// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
 			if ( $result->return_code >= 2 ) {
