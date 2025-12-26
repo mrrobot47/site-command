@@ -1624,20 +1624,19 @@ class Site_Backup_Restore {
 	 * (RAM, CPU, disk I/O, network bandwidth) when triggered simultaneously.
 	 *
 	 * Note: flock() may not work reliably on NFS or other network filesystems.
-	 * EE_ROOT_DIR should be on a local filesystem for proper lock behavior.
+	 * EE_BACKUP_DIR should be on a local filesystem for proper lock behavior.
 	 *
 	 * @return void
 	 */
 	private function acquire_global_backup_lock() {
-		$lock_file = EE_ROOT_DIR . '/services/backup-global.lock';
+		$lock_file = EE_BACKUP_DIR . '/backup-global.lock';
 		$max_wait  = 86400; // 24 hours max wait
 		$waited    = 0;
 		$interval  = 60;    // Check every 60 seconds
 
-		// Ensure services directory exists
-		$services_dir = dirname( $lock_file );
-		if ( ! $this->fs->exists( $services_dir ) ) {
-			$this->fs->mkdir( $services_dir );
+		// Ensure backup directory exists
+		if ( ! $this->fs->exists( EE_BACKUP_DIR ) ) {
+			$this->fs->mkdir( EE_BACKUP_DIR );
 		}
 
 		// Open file handle (creates if doesn't exist)
