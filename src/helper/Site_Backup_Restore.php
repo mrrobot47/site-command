@@ -41,6 +41,9 @@ class Site_Backup_Restore {
 	private $dash_error_type = 'unknown';
 	private $dash_error_code = 0;
 
+	// Global backup lock handle for serializing backups
+	private $global_backup_lock_handle = null;
+
 	public function __construct() {
 		$this->fs = new Filesystem();
 	}
@@ -97,6 +100,12 @@ class Site_Backup_Restore {
 			register_shutdown_function( [ $this, 'dash_shutdown_handler' ] );
 		}
 
+		// Acquire global lock to serialize backups (prevents OOM from concurrent backups)
+		$this->acquire_global_backup_lock();
+
+		// Register shutdown handler to release lock on any exit (error, crash, etc.)
+		register_shutdown_function( [ $this, 'release_global_backup_lock' ] );
+
 		$this->pre_backup_check();
 		$backup_dir = EE_BACKUP_DIR . '/' . $this->site_data['site_url'];
 
@@ -145,6 +154,9 @@ class Site_Backup_Restore {
 				$this->rollback_failed_backup();
 			}
 		}
+
+		// Release global backup lock (also released by shutdown handler as safety net)
+		$this->release_global_backup_lock();
 
 		delem_log( 'site backup end' );
 	}
@@ -419,7 +431,13 @@ class Site_Backup_Restore {
 		if ( $this->fs->exists( $custom_docker_compose_dir ) ) {
 			$custom_docker_compose_dir_archive = $backup_dir . '/user-docker-compose.zip';
 			$archive_command                   = sprintf( 'cd %s && 7z a -mx=1 %s .', $custom_docker_compose_dir, $custom_docker_compose_dir_archive );
-			EE::exec( $archive_command );
+			$result                            = EE::launch( $archive_command );
+
+			// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+			// This is optional, so we just log a warning instead of failing
+			if ( $result->return_code >= 2 ) {
+				EE::warning( 'Failed to backup custom docker-compose directory. Continuing with backup.' );
+			}
 		}
 	}
 
@@ -431,10 +449,11 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/' . $this->site_data['site_url'] . '.zip';
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s .', $site_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		// Check if archive was created successfully
-		if ( ! $result || ! $this->fs->exists( $backup_file ) ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		// Exit code 1 means warnings (e.g., missing symlink targets) but archive is still created
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create site backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -470,9 +489,10 @@ class Site_Backup_Restore {
 		}
 
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s wp-config.php', $site_dir . '/../', $backup_file );
-		$result         = EE::exec( $backup_command );
+		$result         = EE::launch( $backup_command );
 
-		if ( ! $result ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create WordPress content backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -486,15 +506,34 @@ class Site_Backup_Restore {
 
 		// Include meta.json in the zip archive (Corrected logic)
 		$backup_command = sprintf( 'cd %s && 7z u -snl -mx=1 %s %s wp-content', $site_dir, $backup_file, $meta_file );
-		EE::exec( $backup_command );
+		$result         = EE::launch( $backup_command );
 		// Remove the file
 		$this->fs->remove( $meta_file );
 
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
+			$this->capture_error(
+				'Failed to create WordPress content backup archive',
+				self::ERROR_TYPE_FILESYSTEM,
+				3002
+			);
+			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+		}
 
 		$uploads_dir = $site_dir . '/wp-content/uploads';
 		if ( is_link( $uploads_dir ) ) {
 			$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s wp-content/uploads', $site_dir, $backup_file );
-			EE::exec( $backup_command );
+			$result         = EE::launch( $backup_command );
+
+			// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+			if ( $result->return_code >= 2 ) {
+				$this->capture_error(
+					'Failed to create WordPress content backup archive',
+					self::ERROR_TYPE_FILESYSTEM,
+					3002
+				);
+				EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
+			}
 		}
 
 		// Final check that backup file was created successfully
@@ -517,9 +556,10 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/conf.zip';
 		$backup_command = sprintf( 'cd %s && 7z a -mx=1 %s nginx', $conf_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		if ( ! $result ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create nginx configuration backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -536,9 +576,10 @@ class Site_Backup_Restore {
 		$backup_file    = $backup_dir . '/conf.zip';
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s php', $conf_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
+		$result = EE::launch( $backup_command );
 
-		if ( ! $result ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to create PHP configuration backup archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -610,8 +651,10 @@ class Site_Backup_Restore {
 		EE::exec( sprintf( 'mv %s %s', $sql_dump_path, $sql_file ) );
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s sql', $backup_dir, $backup_file );
 
-		$result = EE::exec( $backup_command );
-		if ( ! $result ) {
+		$result = EE::launch( $backup_command );
+
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error
+		if ( $result->return_code >= 2 || ! $this->fs->exists( $backup_file ) ) {
 			$this->capture_error(
 				'Failed to compress database backup into archive',
 				self::ERROR_TYPE_FILESYSTEM,
@@ -619,6 +662,7 @@ class Site_Backup_Restore {
 			);
 			EE::error( 'Failed to compress database backup. Please check disk space.' );
 		}
+
 		$this->fs->remove( $backup_dir . '/sql' );
 	}
 
@@ -960,7 +1004,7 @@ class Site_Backup_Restore {
 		$this->pre_backup_restore_checks();
 
 		$remote_path = $this->get_remote_path( false );
-		$command     = sprintf( 'rclone size --json %s', $remote_path );
+		$command     = sprintf( 'rclone size --json %s', escapeshellarg( $remote_path ) );
 		$output      = EE::launch( $command );
 
 		if ( $output->return_code ) {
@@ -1137,7 +1181,7 @@ class Site_Backup_Restore {
 
 		$remote_path = $this->get_rclone_config_path(); // Get remote path without creating a new timestamped folder
 
-		$command = sprintf( 'rclone lsf --dirs-only %s', $remote_path ); // List only directories
+		$command = sprintf( 'rclone lsf --dirs-only %s', escapeshellarg( $remote_path ) ); // List only directories
 		$output  = EE::launch( $command );
 
 		if ( $output->return_code !== 0 && ! $return ) {
@@ -1216,7 +1260,7 @@ class Site_Backup_Restore {
 	private function rclone_download( $path ) {
 		$cpu_cores     = intval( EE::launch( 'nproc' )->stdout );
 		$multi_threads = min( intval( $cpu_cores ) * 2, 32 );
-		$command       = sprintf( "rclone copy -P --multi-thread-streams %d %s %s", $multi_threads, $this->get_remote_path( false ), $path );
+		$command       = sprintf( "rclone copy -P --multi-thread-streams %d %s %s", $multi_threads, escapeshellarg( $this->get_remote_path( false ) ), escapeshellarg( $path ) );
 		$output        = EE::launch( $command );
 
 		if ( $output->return_code ) {
@@ -1245,7 +1289,7 @@ class Site_Backup_Restore {
 			$s3_flag = ' --s3-chunk-size=64M --s3-upload-concurrency ' . min( intval( $cpu_cores ) * 2, 32 );
 		}
 
-		$command = sprintf( "rclone copy -P %s --transfers %d --checkers %d --buffer-size %s %s %s", $s3_flag, $transfers, $transfers, $buffer_size, $path, $this->get_remote_path() );
+		$command = sprintf( "rclone copy -P %s --transfers %d --checkers %d --buffer-size %s %s %s", $s3_flag, $transfers, $transfers, $buffer_size, escapeshellarg( $path ), escapeshellarg( $this->get_remote_path() ) );
 		$output  = EE::launch( $command );
 
 		if ( $output->return_code ) {
@@ -1257,7 +1301,7 @@ class Site_Backup_Restore {
 			EE::error( 'Error uploading backup to remote storage.' );
 		} else {
 
-			$command     = sprintf( 'rclone lsf %s', $this->get_remote_path( false ) );
+			$command     = sprintf( 'rclone lsf %s', escapeshellarg( $this->get_remote_path( false ) ) );
 			$output      = EE::launch( $command );
 			$remote_path = $output->stdout;
 			EE::success( 'Backup uploaded to remote storage. Remote path: ' . $remote_path );
@@ -1570,5 +1614,88 @@ class Site_Backup_Restore {
 		}
 
 		return intval( $value );
+	}
+
+	/**
+	 * Acquire a global backup lock to ensure only one backup runs at a time.
+	 * Uses flock() for atomic, race-condition-free locking.
+	 *
+	 * This prevents multiple concurrent backups from exhausting system resources
+	 * (RAM, CPU, disk I/O, network bandwidth) when triggered simultaneously.
+	 *
+	 * Note: flock() may not work reliably on NFS or other network filesystems.
+	 * EE_BACKUP_DIR should be on a local filesystem for proper lock behavior.
+	 *
+	 * @return void
+	 */
+	private function acquire_global_backup_lock() {
+		$lock_file = EE_BACKUP_DIR . '/backup-global.lock';
+		$max_wait  = 86400; // 24 hours max wait
+		$waited    = 0;
+		$interval  = 60;    // Check every 60 seconds
+
+		// Ensure backup directory exists
+		if ( ! $this->fs->exists( EE_BACKUP_DIR ) ) {
+			$this->fs->mkdir( EE_BACKUP_DIR );
+		}
+
+		// Open file handle (creates if doesn't exist)
+		$this->global_backup_lock_handle = fopen( $lock_file, 'c+' );
+
+		if ( ! $this->global_backup_lock_handle ) {
+			$this->capture_error(
+				'Cannot create backup lock file',
+				self::ERROR_TYPE_FILESYSTEM,
+				5002
+			);
+			EE::error( 'Cannot create backup lock file.' );
+		}
+
+		// Try to acquire exclusive lock (non-blocking first to log status)
+		while ( ! flock( $this->global_backup_lock_handle, LOCK_EX | LOCK_NB ) ) {
+			if ( $waited >= $max_wait ) {
+				fclose( $this->global_backup_lock_handle );
+				$this->global_backup_lock_handle = null;
+				$this->capture_error(
+					'Timeout waiting for another backup to complete',
+					self::ERROR_TYPE_LOCK,
+					5003
+				);
+				EE::error( 'Timeout waiting for another backup. Try again later.' );
+			}
+
+			// Read who has the lock
+			rewind( $this->global_backup_lock_handle );
+			$lock_info = stream_get_contents( $this->global_backup_lock_handle );
+
+			EE::log( sprintf( 'Another backup in progress (%s). Waiting... (%d/%d sec)',
+				trim( $lock_info ) ?: 'unknown', $waited, $max_wait ) );
+
+			sleep( $interval );
+			$waited += $interval;
+		}
+
+		// Got the lock! Write our info
+		ftruncate( $this->global_backup_lock_handle, 0 );
+		rewind( $this->global_backup_lock_handle );
+		fwrite( $this->global_backup_lock_handle, $this->site_data['site_url'] . ' (PID: ' . getmypid() . ')' );
+		fflush( $this->global_backup_lock_handle );
+
+		EE::debug( 'Acquired global backup lock for: ' . $this->site_data['site_url'] );
+	}
+
+	/**
+	 * Release the global backup lock.
+	 * Safe to call multiple times (idempotent).
+	 *
+	 * @return void
+	 */
+	public function release_global_backup_lock() {
+		if ( $this->global_backup_lock_handle ) {
+			flock( $this->global_backup_lock_handle, LOCK_UN );
+			fclose( $this->global_backup_lock_handle );
+			$this->global_backup_lock_handle = null;
+			EE::debug( 'Released global backup lock' );
+		}
 	}
 }
