@@ -992,7 +992,7 @@ class Site_Backup_Restore {
 		$this->pre_backup_restore_checks();
 
 		$remote_path = $this->get_remote_path( false );
-		$command     = sprintf( 'rclone size --json %s', $remote_path );
+		$command     = sprintf( 'rclone size --json %s', escapeshellarg( $remote_path ) );
 		$output      = EE::launch( $command );
 
 		if ( $output->return_code ) {
@@ -1169,7 +1169,7 @@ class Site_Backup_Restore {
 
 		$remote_path = $this->get_rclone_config_path(); // Get remote path without creating a new timestamped folder
 
-		$command = sprintf( 'rclone lsf --dirs-only %s', $remote_path ); // List only directories
+		$command = sprintf( 'rclone lsf --dirs-only %s', escapeshellarg( $remote_path ) ); // List only directories
 		$output  = EE::launch( $command );
 
 		if ( $output->return_code !== 0 && ! $return ) {
@@ -1248,7 +1248,7 @@ class Site_Backup_Restore {
 	private function rclone_download( $path ) {
 		$cpu_cores     = intval( EE::launch( 'nproc' )->stdout );
 		$multi_threads = min( intval( $cpu_cores ) * 2, 32 );
-		$command       = sprintf( "rclone copy -P --multi-thread-streams %d %s %s", $multi_threads, $this->get_remote_path( false ), $path );
+		$command       = sprintf( "rclone copy -P --multi-thread-streams %d %s %s", $multi_threads, escapeshellarg( $this->get_remote_path( false ) ), escapeshellarg( $path ) );
 		$output        = EE::launch( $command );
 
 		if ( $output->return_code ) {
@@ -1277,7 +1277,7 @@ class Site_Backup_Restore {
 			$s3_flag = ' --s3-chunk-size=64M --s3-upload-concurrency ' . min( intval( $cpu_cores ) * 2, 32 );
 		}
 
-		$command = sprintf( "rclone copy -P %s --transfers %d --checkers %d --buffer-size %s %s %s", $s3_flag, $transfers, $transfers, $buffer_size, $path, $this->get_remote_path() );
+		$command = sprintf( "rclone copy -P %s --transfers %d --checkers %d --buffer-size %s %s %s", $s3_flag, $transfers, $transfers, $buffer_size, escapeshellarg( $path ), escapeshellarg( $this->get_remote_path() ) );
 		$output  = EE::launch( $command );
 
 		if ( $output->return_code ) {
@@ -1289,7 +1289,7 @@ class Site_Backup_Restore {
 			EE::error( 'Error uploading backup to remote storage.' );
 		} else {
 
-			$command     = sprintf( 'rclone lsf %s', $this->get_remote_path( false ) );
+			$command     = sprintf( 'rclone lsf %s', escapeshellarg( $this->get_remote_path( false ) ) );
 			$output      = EE::launch( $command );
 			$remote_path = $output->stdout;
 			EE::success( 'Backup uploaded to remote storage. Remote path: ' . $remote_path );
