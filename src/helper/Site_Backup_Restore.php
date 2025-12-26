@@ -1659,7 +1659,7 @@ class Site_Backup_Restore {
 				$this->capture_error(
 					'Timeout waiting for another backup to complete',
 					self::ERROR_TYPE_LOCK,
-					5001
+					5003
 				);
 				EE::error( 'Timeout waiting for another backup. Try again later.' );
 			}
