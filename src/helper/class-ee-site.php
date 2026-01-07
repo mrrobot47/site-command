@@ -2498,9 +2498,8 @@ abstract class EE_Site_Command {
 	 *     $ ee site backup example.com --list
 	 */
 	public function backup( $args, $assoc_args ) {
-		$args            = auto_site_name( $args, 'site', __FUNCTION__ );
-		$this->site_data = get_site_info( $args, true, true, true );
-		$backup_restore  = new Site_Backup_Restore();
+		$args           = auto_site_name( $args, 'site', __FUNCTION__ );
+		$backup_restore = new Site_Backup_Restore();
 		$backup_restore->backup( $args, $assoc_args );
 	}
 
@@ -2525,9 +2524,8 @@ abstract class EE_Site_Command {
 	 *
 	 */
 	public function restore( $args, $assoc_args ) {
-		$args            = auto_site_name( $args, 'site', __FUNCTION__ );
-		$this->site_data = get_site_info( $args, true, true, true );
-		$backup_restore  = new Site_Backup_Restore();
+		$args           = auto_site_name( $args, 'site', __FUNCTION__ );
+		$backup_restore = new Site_Backup_Restore();
 		$backup_restore->restore( $args, $assoc_args );
 	}
 
