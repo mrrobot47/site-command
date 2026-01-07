@@ -50,9 +50,18 @@ class Site_Backup_Restore {
 
 	public function backup( $args, $assoc_args = [] ) {
 		delem_log( 'site backup start' );
-		$args            = auto_site_name( $args, 'site', __FUNCTION__ );
-		$this->site_data = get_site_info( $args, true, true, true );
-		$list_backups    = \EE\Utils\get_flag_value( $assoc_args, 'list' );
+		$args         = auto_site_name( $args, 'site', __FUNCTION__ );
+		$list_backups = \EE\Utils\get_flag_value( $assoc_args, 'list' );
+		$dash_auth    = \EE\Utils\get_flag_value( $assoc_args, 'dash-auth' );
+
+		// For --list or --dash-auth, we handle site disabled state specially
+		// --list is read-only and should work regardless of site state
+		// --dash-auth needs to send API callback instead of just exiting with error
+		if ( $list_backups || $dash_auth ) {
+			$this->site_data = get_site_info( $args, false, true, true );
+		} else {
+			$this->site_data = get_site_info( $args, true, true, true );
+		}
 
 		// Handle --list flag to display available backups
 		if ( $list_backups ) {
@@ -62,8 +71,6 @@ class Site_Backup_Restore {
 		}
 
 		// Handle --dash-auth flag for EasyDash integration
-		$dash_auth = \EE\Utils\get_flag_value( $assoc_args, 'dash-auth' );
-
 		if ( $dash_auth ) {
 			// Debug: Log the raw dash_auth value received
 			EE::debug( 'Received --dash-auth value: ' . $dash_auth );
@@ -71,11 +78,6 @@ class Site_Backup_Restore {
 			// Parse backup-id:backup-verification-token format
 			$auth_parts = explode( ':', $dash_auth, 2 );
 			if ( count( $auth_parts ) !== 2 || empty( $auth_parts[0] ) || empty( $auth_parts[1] ) ) {
-				$this->capture_error(
-					'Invalid --dash-auth format. Expected: backup-id:backup-verification-token',
-					self::ERROR_TYPE_VALIDATION,
-					1001
-				);
 				EE::error( 'Invalid --dash-auth format. Expected: backup-id:backup-verification-token' );
 			}
 
@@ -86,6 +88,7 @@ class Site_Backup_Restore {
 			}
 
 			// Store dash auth info in class properties for shutdown handler
+			// Must be set before any capture_error calls so API callbacks work
 			$this->dash_auth_enabled = true;
 			$this->dash_backup_id    = $auth_parts[0];
 			$this->dash_verify_token = $auth_parts[1];
@@ -98,6 +101,13 @@ class Site_Backup_Restore {
 
 			// Register shutdown handler to send failure callback if backup doesn't complete
 			register_shutdown_function( [ $this, 'dash_shutdown_handler' ] );
+
+			// Check if site is disabled - send API callback with error
+			if ( ! $this->site_data['site_enabled'] ) {
+				$error_msg = sprintf( 'Site %s is disabled. Enable it with `ee site enable %s` to create backup.', $this->site_data['site_url'], $this->site_data['site_url'] );
+				$this->capture_error( $error_msg, self::ERROR_TYPE_VALIDATION, 1003 );
+				EE::error( $error_msg );
+			}
 		}
 
 		// Acquire global lock to serialize backups (prevents OOM from concurrent backups)
@@ -157,6 +167,8 @@ class Site_Backup_Restore {
 
 		// Release global backup lock (also released by shutdown handler as safety net)
 		$this->release_global_backup_lock();
+
+		EE::success( 'Backup created successfully.' );
 
 		delem_log( 'site backup end' );
 	}
@@ -1564,7 +1576,7 @@ class Site_Backup_Restore {
 					) );
 				}
 				sleep( $retry_delay );
-				$attempt++; // Increment at end of loop iteration
+				$attempt ++; // Increment at end of loop iteration
 			} else {
 				// Either not a retryable error, or we've exhausted all retries
 				if ( $error ) {
