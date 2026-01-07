@@ -50,9 +50,17 @@ class Site_Backup_Restore {
 
 	public function backup( $args, $assoc_args = [] ) {
 		delem_log( 'site backup start' );
-		$args            = auto_site_name( $args, 'site', __FUNCTION__ );
-		$this->site_data = get_site_info( $args, true, true, true );
-		$list_backups    = \EE\Utils\get_flag_value( $assoc_args, 'list' );
+		$args        = auto_site_name( $args, 'site', __FUNCTION__ );
+		$list_backups = \EE\Utils\get_flag_value( $assoc_args, 'list' );
+		$dash_auth    = \EE\Utils\get_flag_value( $assoc_args, 'dash-auth' );
+
+		// For dash-auth commands, we need to handle site disabled state specially
+		// to send API callback instead of just exiting with error
+		if ( $dash_auth ) {
+			$this->site_data = get_site_info( $args, false, true, true );
+		} else {
+			$this->site_data = get_site_info( $args, true, true, true );
+		}
 
 		// Handle --list flag to display available backups
 		if ( $list_backups ) {
@@ -62,8 +70,6 @@ class Site_Backup_Restore {
 		}
 
 		// Handle --dash-auth flag for EasyDash integration
-		$dash_auth = \EE\Utils\get_flag_value( $assoc_args, 'dash-auth' );
-
 		if ( $dash_auth ) {
 			// Debug: Log the raw dash_auth value received
 			EE::debug( 'Received --dash-auth value: ' . $dash_auth );
@@ -98,6 +104,16 @@ class Site_Backup_Restore {
 
 			// Register shutdown handler to send failure callback if backup doesn't complete
 			register_shutdown_function( [ $this, 'dash_shutdown_handler' ] );
+
+			// Check if site is disabled - send API callback with error
+			if ( empty( $this->site_data['site_enabled'] ) ) {
+				$this->capture_error(
+					sprintf( 'Site %s is disabled. Enable it with `ee site enable %s` to create backup.', $this->site_data['site_url'], $this->site_data['site_url'] ),
+					self::ERROR_TYPE_VALIDATION,
+					1003
+				);
+				EE::error( sprintf( 'Site %s is disabled. Enable it with `ee site enable %s` to create backup.', $this->site_data['site_url'], $this->site_data['site_url'] ) );
+			}
 		}
 
 		// Acquire global lock to serialize backups (prevents OOM from concurrent backups)
