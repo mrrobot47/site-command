@@ -488,7 +488,30 @@ class Site_Backup_Restore {
 			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
 		}
 
+		$this->verify_archive_integrity( $backup_file );
+
 		return $backup_file;
+	}
+
+	/**
+	 * Run `7z t` on a freshly-created backup archive and abort if it is corrupt.
+	 *
+	 * Catches silently-truncated/corrupt archives before they are uploaded, so a
+	 * broken backup never replaces a good one in remote storage.
+	 *
+	 * @param string $archive Absolute path to the archive to test.
+	 */
+	private function verify_archive_integrity( $archive ) {
+		if ( EE::exec( sprintf( '7z t %s', escapeshellarg( $archive ) ) ) ) {
+			return;
+		}
+
+		$this->capture_error(
+			sprintf( 'Backup archive failed integrity check: %s', $archive ),
+			self::ERROR_TYPE_FILESYSTEM,
+			3003
+		);
+		EE::error( 'Backup archive failed integrity verification. Aborting before upload to avoid overwriting a good backup.' );
 	}
 
 	private function backup_wp_content_dir( $backup_dir ) {
@@ -571,6 +594,8 @@ class Site_Backup_Restore {
 			);
 			EE::error( 'Failed to create backup archive. Please check disk space and file permissions.' );
 		}
+
+		$this->verify_archive_integrity( $backup_file );
 
 		return $backup_file;
 	}
@@ -655,17 +680,25 @@ class Site_Backup_Restore {
 
 		$this->fs->mkdir( $backup_dir . '/sql' );
 
-		$backup_command = sprintf( 'mysqldump --skip-ssl -u %s -p%s -h %s --single-transaction %s > /var/www/htdocs/%s', $db_user, $db_password, $db_host, $db_name, $sql_filename );
-		$args           = [ 'shell', $this->site_data['site_url'] ];
-		$assoc_args     = [ 'command' => $backup_command ];
-		$options        = [ 'skip-tty' => true ];
+		// Escape DB credentials: command runs through a container shell (matches restore_db()/get_db_size()).
+		$backup_command = sprintf(
+			'mysqldump --skip-ssl -u %s -p%s -h %s --single-transaction %s > /var/www/htdocs/%s',
+			escapeshellarg( $db_user ),
+			escapeshellarg( $db_password ),
+			escapeshellarg( $db_host ),
+			escapeshellarg( $db_name ),
+			$sql_filename
+		);
 
-		EE::run_command( $args, $assoc_args, $options );
+		// Launch via `ee shell` so the dump's exit code is captured. The shell `>` redirect
+		// creates/truncates the target before mysqldump runs, so a failed dump leaves a 0-byte
+		// file that passes exists(); rely on the exit code + filesize instead.
+		$dump_result = EE::launch( sprintf( 'ee shell %s --skip-tty --command=%s', escapeshellarg( $this->site_data['site_url'] ), escapeshellarg( $backup_command ) ) );
 
 		$sql_dump_path = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/app/htdocs/' . $sql_filename;
 
-		// Check if database dump was created successfully
-		if ( ! $this->fs->exists( $sql_dump_path ) ) {
+		// A 0-byte or missing dump, or a non-zero exit, means the backup failed.
+		if ( 0 !== $dump_result->return_code || ! $this->fs->exists( $sql_dump_path ) || filesize( $sql_dump_path ) <= 0 ) {
 			$this->capture_error(
 				sprintf( 'Database backup failed for database: %s', $db_name ),
 				self::ERROR_TYPE_DATABASE,
