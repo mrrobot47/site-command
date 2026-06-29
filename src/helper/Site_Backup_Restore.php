@@ -763,12 +763,21 @@ class Site_Backup_Restore {
 
 		// Keep mysql's own stderr (2>&1) instead of discarding it to /dev/null so a
 		// failed import surfaces a real diagnostic (mysql never echoes the password
-		// value, so this does not leak it). The password is single-quoted here, which
-		// guards layer-1 word-splitting; the inner `ee shell` `bash -c "$command"`
-		// wrapper (a pre-existing limitation) still re-exposes $, backticks and ", so a
-		// password containing those is not fully carried through. EE's DB credentials
-		// are alphanumeric by default, so this only affects operator-set special chars.
-		$restore_command = sprintf( "mysql --skip-ssl -u '%s' -p'%s' -h '%s' '%s' < '%s' 2>&1", $db_user, $db_password, $db_host, $db_name, $sql_path );
+		// value, so this does not leak it). escapeshellarg() each value (matching
+		// get_db_size()) for layer-1 word-splitting/quote safety; `-p%s` yields
+		// `-p'pass'` with no space, as mysql requires. Note the inner `ee shell`
+		// `bash -c "$command"` wrapper (a pre-existing limitation) still re-exposes $,
+		// backticks and ", so a credential containing those is not fully carried
+		// through. EE's DB credentials are alphanumeric by default, so this only
+		// affects operator-set special chars.
+		$restore_command = sprintf(
+			'mysql --skip-ssl -u %s -p%s -h %s %s < %s 2>&1',
+			escapeshellarg( $db_user ),
+			escapeshellarg( $db_password ),
+			escapeshellarg( $db_host ),
+			escapeshellarg( $db_name ),
+			escapeshellarg( $sql_path )
+		);
 
 		// A failed import must abort the restore instead of being reported as success.
 		$this->run_checked_shell_command( $restore_command, 'Database restore failed.' );
