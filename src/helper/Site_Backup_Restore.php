@@ -170,7 +170,7 @@ class Site_Backup_Restore {
 		$this->fs->remove( $backup_dir );
 		$this->staging_dir = null; // Removed cleanly; nothing for the shutdown handler to do.
 
-		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+		$this->try_remove_site_lock();
 
 		// Mark backup as completed and send success callback
 		$this->dash_backup_completed = true;
@@ -326,7 +326,7 @@ class Site_Backup_Restore {
 		EE::log( 'Reloading site.' );
 		EE::run_command( [ 'site', 'reload', $this->site_data['site_url'] ], [], [] );
 
-		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+		$this->try_remove_site_lock();
 
 		EE::success( 'Site restored successfully.' );
 
@@ -998,7 +998,7 @@ class Site_Backup_Restore {
 				self::ERROR_TYPE_FILESYSTEM,
 				3003
 			);
-			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			$this->try_remove_site_lock();
 			EE::error( "Site app directory does not exist: $site_root/app" );
 		}
 
@@ -1006,15 +1006,13 @@ class Site_Backup_Restore {
 		// archives the whole app/ dir, and all types also archive config/ (nginx
 		// for all, php for php/wp). The previous estimate sized only app/htdocs and
 		// so missed the rest of app/ and the config archive entirely.
-		$db_size   = 0;
 		$site_size = $this->dir_size( $site_root . '/app' );
 		$site_size += $this->dir_size( $site_root . '/config' );
 
 		EE::debug( 'Site size (files): ' . $site_size );
 
 		if ( in_array( $this->site_data['site_type'], [ 'php', 'wp' ] ) && ! empty( $this->site_data['db_name'] ) ) {
-			$db_size   = $this->get_db_size();
-			$site_size += $db_size;
+			$site_size += $this->get_db_size();
 			EE::debug( 'Site size with db: ' . $site_size );
 		}
 
@@ -1033,7 +1031,7 @@ class Site_Backup_Restore {
 				self::ERROR_TYPE_FILESYSTEM,
 				3004
 			);
-			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			$this->try_remove_site_lock();
 			EE::error( 'Unable to determine free disk space for backup directory.' );
 		}
 		EE::debug( 'Required space (with headroom): ' . $required_size . ', Free space: ' . $free_space );
@@ -1051,8 +1049,25 @@ class Site_Backup_Restore {
 				3001
 			);
 
-			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			$this->try_remove_site_lock();
 			EE::error( $error_message );
+		}
+	}
+
+	/**
+	 * Best-effort removal of the per-site lock file.
+	 *
+	 * Filesystem::remove() throws on a failed unlink; callers on an error path are
+	 * about to EE::error(), so a lock-cleanup failure must not throw and mask the
+	 * real cause. Swallow any failure (logged at debug level).
+	 *
+	 * @return void
+	 */
+	private function try_remove_site_lock() {
+		try {
+			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+		} catch ( \Throwable $e ) {
+			EE::debug( 'Could not remove site lock: ' . $e->getMessage() );
 		}
 	}
 
