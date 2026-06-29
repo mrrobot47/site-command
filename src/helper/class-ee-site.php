@@ -2205,10 +2205,10 @@ abstract class EE_Site_Command {
 		$logger = \EE::get_file_logger()->withName( 'site-command' );
 		$error  = error_get_last();
 
-		// The per-site backup/restore lock is now an flock() held by
+		// The per-site backup/restore lock is now a flock() held by
 		// Site_Backup_Restore and released automatically on process exit. It must
 		// NOT be deleted here: unlinking a file that another process currently
-		// holds an flock on lets a later process create a fresh inode at the same
+		// holds a flock on lets a later process create a fresh inode at the same
 		// path and acquire its own lock, silently breaking mutual exclusion.
 
 		if ( isset( $error ) && $error['type'] === E_ERROR ) {
