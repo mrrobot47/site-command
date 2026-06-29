@@ -2205,14 +2205,11 @@ abstract class EE_Site_Command {
 		$logger = \EE::get_file_logger()->withName( 'site-command' );
 		$error  = error_get_last();
 
-		// Check if the $this->site_data is set and it is array and  $this->site_data['site_url'] is set.
-		if ( isset( $this->site_data ) && is_array( $this->site_data ) && isset( $this->site_data['site_url'] ) ) {
-			// release lock if there.
-			$lock_file = EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock';
-			if ( $this->fs->exists( $lock_file ) ) {
-				$this->fs->remove( $lock_file );
-			}
-		}
+		// The per-site backup/restore lock is now an flock() held by
+		// Site_Backup_Restore and released automatically on process exit. It must
+		// NOT be deleted here: unlinking a file that another process currently
+		// holds an flock on lets a later process create a fresh inode at the same
+		// path and acquire its own lock, silently breaking mutual exclusion.
 
 		if ( isset( $error ) && $error['type'] === E_ERROR ) {
 			\EE::warning( 'An Error occurred. Initiating clean-up.' );

@@ -51,6 +51,9 @@ class Site_Backup_Restore {
 	// Global backup lock handle for serializing backups
 	private $global_backup_lock_handle = null;
 
+	// Per-site backup/restore lock handle (flock-based, auto-released on exit)
+	private $site_backup_lock_handle = null;
+
 	public function __construct() {
 		$this->fs = new Filesystem();
 	}
@@ -152,7 +155,7 @@ class Site_Backup_Restore {
 		$this->rclone_upload( $backup_dir );
 		$this->fs->remove( $backup_dir );
 
-		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+		$this->release_site_backup_lock();
 
 		// Mark backup as completed and send success callback
 		$this->dash_backup_completed = true;
@@ -300,7 +303,7 @@ class Site_Backup_Restore {
 		EE::log( 'Reloading site.' );
 		EE::run_command( [ 'site', 'reload', $this->site_data['site_url'] ], [], [] );
 
-		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+		$this->release_site_backup_lock();
 
 		EE::success( 'Site restored successfully.' );
 
@@ -946,16 +949,47 @@ class Site_Backup_Restore {
 
 		$lock_file = EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock';
 
-		if ( $this->fs->exists( $lock_file ) ) {
+		// Per-site lock guarding against a concurrent backup/restore of the SAME
+		// site. Uses flock() rather than file existence so the OS releases it
+		// automatically if the process dies mid-operation -- the previous
+		// file-existence lock was removed only on success paths, so any crash,
+		// OOM, or error exit left a stale `.lock` that permanently blocked all
+		// future backups/restores of that site. Opened with the 'e' flag
+		// (O_CLOEXEC) so backup subprocesses (rclone, mysqldump, docker exec)
+		// don't inherit the descriptor and keep the lock held after we exit.
+		$this->site_backup_lock_handle = fopen( $lock_file, 'c+e' );
+
+		if ( ! $this->site_backup_lock_handle ) {
+			$this->capture_error(
+				'Cannot create backup lock file',
+				self::ERROR_TYPE_FILESYSTEM,
+				5002
+			);
+			EE::error( 'Cannot create backup lock file.' );
+		}
+
+		// Non-blocking: fail fast if another backup/restore holds this site's lock.
+		if ( ! flock( $this->site_backup_lock_handle, LOCK_EX | LOCK_NB ) ) {
+			fclose( $this->site_backup_lock_handle );
+			$this->site_backup_lock_handle = null;
 			$this->capture_error(
 				'Another backup/restore process is already running for this site',
 				self::ERROR_TYPE_LOCK,
 				2003
 			);
 			EE::error( 'Another backup/restore process is running. Please wait for it to complete.' );
-		} else {
-			$this->fs->dumpFile( $lock_file, 'lock' );
 		}
+
+		// Release on graceful exit (EE::error/exit, PHP fatal, Ctrl-C). On
+		// SIGTERM/SIGKILL/OOM the shutdown handler does not run, but the OS
+		// releases the flock on process death -- so the lock is freed in every case.
+		register_shutdown_function( [ $this, 'release_site_backup_lock' ] );
+
+		// Record the holder for debugging only; flock is the source of truth.
+		ftruncate( $this->site_backup_lock_handle, 0 );
+		rewind( $this->site_backup_lock_handle );
+		fwrite( $this->site_backup_lock_handle, $this->site_data['site_url'] . ' (PID: ' . getmypid() . ')' );
+		fflush( $this->site_backup_lock_handle );
 	}
 
 	private function pre_backup_check() {
@@ -987,7 +1021,7 @@ class Site_Backup_Restore {
 				3001
 			);
 
-			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			$this->release_site_backup_lock();
 			EE::error( $error_message );
 		}
 	}
@@ -1904,8 +1938,10 @@ class Site_Backup_Restore {
 			$this->fs->mkdir( EE_BACKUP_DIR );
 		}
 
-		// Open file handle (creates if doesn't exist)
-		$this->global_backup_lock_handle = fopen( $lock_file, 'c+' );
+		// Open file handle (creates if doesn't exist). The 'e' flag (O_CLOEXEC)
+		// stops backup subprocesses (rclone, mysqldump, docker exec) from
+		// inheriting this descriptor and holding the lock after this process exits.
+		$this->global_backup_lock_handle = fopen( $lock_file, 'c+e' );
 
 		if ( ! $this->global_backup_lock_handle ) {
 			$this->capture_error(
@@ -1961,6 +1997,21 @@ class Site_Backup_Restore {
 			fclose( $this->global_backup_lock_handle );
 			$this->global_backup_lock_handle = null;
 			EE::debug( 'Released global backup lock' );
+		}
+	}
+
+	/**
+	 * Release the per-site backup/restore lock.
+	 * Safe to call multiple times (idempotent).
+	 *
+	 * @return void
+	 */
+	public function release_site_backup_lock() {
+		if ( $this->site_backup_lock_handle ) {
+			flock( $this->site_backup_lock_handle, LOCK_UN );
+			fclose( $this->site_backup_lock_handle );
+			$this->site_backup_lock_handle = null;
+			EE::debug( 'Released per-site backup lock' );
 		}
 	}
 }
