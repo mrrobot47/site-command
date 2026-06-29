@@ -176,7 +176,7 @@ class Site_Backup_Restore {
 				$this->capture_error(
 					'Backup uploaded but EasyDash success callback failed; rolled back the orphaned upload.',
 					self::ERROR_TYPE_NETWORK,
-					4002
+					4004
 				);
 				$this->rollback_failed_backup();
 				EE::error( 'EasyDash success callback failed; the uploaded backup was rolled back. No backup was created.' );
@@ -1649,18 +1649,21 @@ class Site_Backup_Restore {
 		$result = EE::launch( sprintf( 'rclone purge %s', escapeshellarg( $this->dash_new_backup_path ) ) );
 
 		if ( $result->return_code ) {
-			// Rollback purge failed: an untracked backup is now orphaned on the
-			// remote. Surface it so the exit code and failure callback reflect this
-			// state instead of silently continuing past a warning. capture_error keeps
-			// the root cause if one was already recorded by the caller.
+			// Rollback purge failed: the untracked backup genuinely survives on the
+			// remote, so the operator must delete it manually. Force-overwrite any
+			// optimistic "rolled back" error captured by the caller (capture_error is
+			// first-wins) so EasyDash receives this accurate path, not the inverse.
 			$message = sprintf(
 				'Failed to delete orphaned backup from remote storage. Please manually delete: %s',
 				$this->dash_new_backup_path
 			);
+			$this->dash_error_message = '';
 			$this->capture_error( $message, self::ERROR_TYPE_FILESYSTEM, 4003 );
 			EE::error( $message );
 		} else {
-			EE::success( 'Successfully removed unregistered backup from remote storage.' );
+			// Demoted from EE::success: this always precedes a terminal EE::error, so a
+			// green success line would be misleading on a failing command.
+			EE::log( 'Successfully removed unregistered backup from remote storage.' );
 		}
 	}
 
