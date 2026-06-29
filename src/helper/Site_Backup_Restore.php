@@ -463,6 +463,10 @@ class Site_Backup_Restore {
 			// This is optional, so we just log a warning instead of failing
 			if ( $result->return_code >= 2 ) {
 				EE::warning( 'Failed to backup custom docker-compose directory. Continuing with backup.' );
+			} elseif ( EE::launch( sprintf( '7z t %s', escapeshellarg( $custom_docker_compose_dir_archive ) ) )->return_code >= 2 ) {
+				// Optional archive: warn (and drop the corrupt zip) instead of aborting the whole backup.
+				EE::warning( 'Custom docker-compose archive failed integrity check. Excluding it from the backup.' );
+				$this->fs->remove( $custom_docker_compose_dir_archive );
 			}
 		}
 	}
@@ -502,7 +506,8 @@ class Site_Backup_Restore {
 	 * @param string $archive Absolute path to the archive to test.
 	 */
 	private function verify_archive_integrity( $archive ) {
-		if ( EE::exec( sprintf( '7z t %s', escapeshellarg( $archive ) ) ) ) {
+		// 7z exit codes: 0=success, 1=warning (non-fatal), 2+=fatal error.
+		if ( EE::launch( sprintf( '7z t %s', escapeshellarg( $archive ) ) )->return_code < 2 ) {
 			return;
 		}
 
@@ -618,6 +623,8 @@ class Site_Backup_Restore {
 			);
 			EE::error( 'Failed to create nginx configuration backup archive. Please check disk space and file permissions.' );
 		}
+
+		$this->verify_archive_integrity( $backup_file );
 	}
 
 	private function backup_php_conf( $backup_dir ) {
@@ -638,6 +645,8 @@ class Site_Backup_Restore {
 			);
 			EE::error( 'Failed to create PHP configuration backup archive. Please check disk space and file permissions.' );
 		}
+
+		$this->verify_archive_integrity( $backup_file );
 	}
 
 	private function backup_html( $backup_dir ) {
@@ -680,7 +689,10 @@ class Site_Backup_Restore {
 
 		$this->fs->mkdir( $backup_dir . '/sql' );
 
-		// Escape DB credentials: command runs through a container shell (matches restore_db()/get_db_size()).
+		// Best-effort layer-1 quoting of DB credentials (consistent with restore_db()/get_db_size()).
+		// NOTE: the value still passes through a second double-quoted `bash -c "$command"` layer
+		// inside `ee shell` that escapeshellarg cannot protect, so a password containing ` " or $
+		// can still break the dump. Fully hardening that inner wrapper is out of scope here.
 		$backup_command = sprintf(
 			'mysqldump --skip-ssl -u %s -p%s -h %s --single-transaction %s > /var/www/htdocs/%s',
 			escapeshellarg( $db_user ),
@@ -707,7 +719,19 @@ class Site_Backup_Restore {
 			EE::error( 'Database backup failed. Please check database credentials and connectivity.' );
 		}
 
-		EE::exec( sprintf( 'mv %s %s', $sql_dump_path, $sql_file ) );
+		// A failed mv (cross-device, permissions, disk-full, etc.) would leave sql/ empty;
+		// `7z u` on an empty dir exits 0 and `7z t` passes, shipping a DB-less "successful"
+		// backup. Fail loudly unless the dump actually landed and is non-empty.
+		if ( ! EE::exec( sprintf( 'mv %s %s', escapeshellarg( $sql_dump_path ), escapeshellarg( $sql_file ) ) )
+			|| ! $this->fs->exists( $sql_file ) || filesize( $sql_file ) <= 0 ) {
+			$this->capture_error(
+				sprintf( 'Failed to stage database dump for database: %s', $db_name ),
+				self::ERROR_TYPE_DATABASE,
+				4003
+			);
+			EE::error( 'Database backup failed while staging the dump file.' );
+		}
+
 		$backup_command = sprintf( 'cd %s && 7z u -mx=1 %s sql', $backup_dir, $backup_file );
 
 		$result = EE::launch( $backup_command );
