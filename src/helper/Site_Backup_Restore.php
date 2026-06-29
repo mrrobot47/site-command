@@ -51,8 +51,20 @@ class Site_Backup_Restore {
 	// Global backup lock handle for serializing backups
 	private $global_backup_lock_handle = null;
 
+	// Local staging dir (EE_BACKUP_DIR/<site_url>) holding the in-progress archive
+	// (backup) or the downloaded archive (restore). Cleared once the success path
+	// removes it; the shutdown handler purges it only when an error/crash left it
+	// behind, so a failed run can't fill the disk or leave a stale partial download.
+	private $staging_dir = null;
+
+	// Temp SQL query files written into the live web root, run, then removed. Each
+	// is removed inline on the success path; the shutdown handler is a safety net
+	// for an interrupt between write and remove.
+	private $temp_query_files = [];
+
 	public function __construct() {
 		$this->fs = new Filesystem();
+		register_shutdown_function( [ $this, 'cleanup_temp_query_files' ] );
 	}
 
 	public function backup( $args, $assoc_args = [] ) {
@@ -127,6 +139,11 @@ class Site_Backup_Restore {
 		$this->pre_backup_check();
 		$backup_dir = EE_BACKUP_DIR . '/' . $this->site_data['site_url'];
 
+		// Track the staging dir so an abnormal exit (error, crash, OOM, Ctrl-C)
+		// purges the half-built archive instead of leaving it to fill the disk.
+		$this->staging_dir = $backup_dir;
+		register_shutdown_function( [ $this, 'cleanup_staging_dir' ] );
+
 		$this->fs->remove( $backup_dir );
 		$this->fs->mkdir( $backup_dir );
 
@@ -151,6 +168,7 @@ class Site_Backup_Restore {
 
 		$this->rclone_upload( $backup_dir );
 		$this->fs->remove( $backup_dir );
+		$this->staging_dir = null; // Removed cleanly; nothing for the shutdown handler to do.
 
 		$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
 
@@ -265,6 +283,11 @@ class Site_Backup_Restore {
 		$backup_id  = \EE\Utils\get_flag_value( $assoc_args, 'id' );
 		$backup_dir = EE_BACKUP_DIR . '/' . $this->site_data['site_url'];
 
+		// Track the staging dir so an abnormal exit purges the downloaded archive
+		// instead of leaving a stale partial download that a later run might reuse.
+		$this->staging_dir = $backup_dir;
+		register_shutdown_function( [ $this, 'cleanup_staging_dir' ] );
+
 		if ( ! $this->fs->exists( $backup_dir ) ) {
 			$this->fs->mkdir( $backup_dir );
 		}
@@ -296,6 +319,7 @@ class Site_Backup_Restore {
 		$this->maybe_restore_custom_docker_compose( $backup_dir );
 
 		$this->fs->remove( $backup_dir );
+		$this->staging_dir = null; // Removed cleanly; nothing for the shutdown handler to do.
 
 		EE::log( 'Reloading site.' );
 		EE::run_command( [ 'site', 'reload', $this->site_data['site_url'] ], [], [] );
@@ -342,10 +366,13 @@ class Site_Backup_Restore {
 
 			$query      = 'SELECT COUNT(*) FROM ' . $table_prefix . 'posts WHERE post_type = "attachment"';
 			$query_file = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/app/htdocs/query.sql';
+			// Track for shutdown cleanup in case an interrupt hits before the remove below.
+			$this->temp_query_files[] = $query_file;
 			$this->fs->dumpFile( $query_file, $query );
 			$upload_count = $this->run_wp_cli_command( 'db query < /var/www/htdocs/query.sql --skip-column-names | tr -d \'[:space:]\'', true );
 			$upload_count = empty( $upload_count ) ? 0 : $upload_count;
 			$this->fs->remove( $query_file );
+			$this->temp_query_files = array_values( array_diff( $this->temp_query_files, [ $query_file ] ) );
 
 			$plugin_count = $this->run_wp_cli_command( 'plugin list --format=count' );
 			// if it is not a number, then make it -
@@ -961,26 +988,62 @@ class Site_Backup_Restore {
 	private function pre_backup_check() {
 		$this->pre_backup_restore_checks();
 
-		$site_path = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/app/htdocs';
-		$site_size = $this->dir_size( $site_path );
+		$site_root = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'];
 
-		EE::debug( 'Site size: ' . $site_size );
+		if ( ! $this->fs->exists( $site_root . '/app' ) ) {
+			$this->capture_error(
+				sprintf( 'Site app directory not found: %s/app', $site_root ),
+				self::ERROR_TYPE_FILESYSTEM,
+				3003
+			);
+			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			EE::error( "Site app directory does not exist: $site_root/app" );
+		}
+
+		// Size everything actually archived, not just app/htdocs: every site type
+		// archives the whole app/ dir, and all types also archive config/ (nginx
+		// for all, php for php/wp). The previous estimate sized only app/htdocs and
+		// so missed the rest of app/ and the config archive entirely.
+		$db_size   = 0;
+		$site_size = $this->dir_size( $site_root . '/app' );
+		$site_size += $this->dir_size( $site_root . '/config' );
+
+		EE::debug( 'Site size (files): ' . $site_size );
 
 		if ( in_array( $this->site_data['site_type'], [ 'php', 'wp' ] ) && ! empty( $this->site_data['db_name'] ) ) {
-			$site_size += $this->get_db_size();
+			$db_size   = $this->get_db_size();
+			$site_size += $db_size;
 			EE::debug( 'Site size with db: ' . $site_size );
 		}
 
-		$free_space = disk_free_space( EE_BACKUP_DIR );
-		EE::debug( 'Free space: ' . $free_space );
+		// Headroom for the transient uncompressed SQL dump (written into the web
+		// root, then moved into the staging dir -- briefly on disk twice when
+		// EE_ROOT_DIR and EE_BACKUP_DIR share a filesystem) and the growing
+		// archive. Requiring free space >= the full uncompressed source already
+		// covers the compressed archive (7z output <= input); add the dump size
+		// again plus a 10% slack so a near-full disk fails the check up front
+		// instead of part-way through the archive.
+		$required_size = (int) ceil( ( $site_size + $db_size ) * 1.1 );
 
-		if ( $site_size > $free_space ) {
-			$error_message = $this->build_disk_space_error_message( 'backup', $site_size, $free_space );
+		$free_space = disk_free_space( EE_BACKUP_DIR );
+		if ( false === $free_space ) {
+			$this->capture_error(
+				'Unable to determine free disk space for backup directory',
+				self::ERROR_TYPE_FILESYSTEM,
+				3004
+			);
+			$this->fs->remove( EE_BACKUP_DIR . '/' . $this->site_data['site_url'] . '.lock' );
+			EE::error( 'Unable to determine free disk space for backup directory.' );
+		}
+		EE::debug( 'Required space (with headroom): ' . $required_size . ', Free space: ' . $free_space );
+
+		if ( $required_size > $free_space ) {
+			$error_message = $this->build_disk_space_error_message( 'backup', $required_size, $free_space );
 
 			$this->capture_error(
 				sprintf(
 					'Insufficient disk space for backup. Required: %s, Available: %s',
-					$this->format_bytes( $site_size ),
+					$this->format_bytes( $required_size ),
 					$this->format_bytes( $free_space )
 				),
 				self::ERROR_TYPE_DISK_SPACE,
@@ -1160,22 +1223,41 @@ class Site_Backup_Restore {
 		return round( $size, $precision ) . ' ' . $units[ $pow ];
 	}
 
+	/**
+	 * Sum the byte size of every file under $directory.
+	 *
+	 * A missing directory returns 0 (some archived dirs are optional, e.g. a
+	 * site's config/ may not exist yet) rather than aborting. Files whose size
+	 * can't be read are counted as 0 but raise a warning so the disk-space
+	 * pre-check isn't silently under-estimating.
+	 */
 	private function dir_size( string $directory ) {
 		$size = 0;
 
 		EE::debug( "Calculating size of $directory" );
 
 		if ( ! $this->fs->exists( $directory ) ) {
-			EE::error( "Directory does not exist: $directory" );
+			return 0;
 		}
 
-		$files = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $directory, \FilesystemIterator::SKIP_DOTS ) );
+		$files       = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $directory, \FilesystemIterator::SKIP_DOTS ) );
+		$unreadable  = 0;
 
 		foreach ( $files as $file ) {
 			if ( ! $file->isReadable() ) {
+				$unreadable++;
 				continue;
 			}
-			$size += $file->getSize();
+			$file_size = $file->getSize();
+			if ( false === $file_size ) {
+				$unreadable++;
+				continue;
+			}
+			$size += $file_size;
+		}
+
+		if ( $unreadable > 0 ) {
+			EE::warning( sprintf( 'Could not size %d file(s) under %s; disk-space estimate may be low.', $unreadable, $directory ) );
 		}
 
 		EE::debug( "Size of $directory: $size" );
@@ -1204,6 +1286,8 @@ class Site_Backup_Restore {
 
 
 		$query_file = EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] . '/app/htdocs/db_size_query.sql';
+		// Track for shutdown cleanup in case an interrupt hits before the remove below.
+		$this->temp_query_files[] = $query_file;
 		$this->fs->dumpFile( $query_file, $query );
 
 
@@ -1213,14 +1297,25 @@ class Site_Backup_Restore {
 
 
 		$this->fs->remove( $query_file );
+		$this->temp_query_files = array_values( array_diff( $this->temp_query_files, [ $query_file ] ) );
 
 
 		$size        = 0;
+		$size_found  = false;
 		$size_output = explode( "\n", $output->stdout );
 
 		if ( count( $size_output ) > 1 ) {
 			$size_array = explode( "\t", $size_output[1] );
-			$size       = isset( $size_array[1] ) ? $size_array[1] : 0;
+			if ( isset( $size_array[1] ) && is_numeric( $size_array[1] ) ) {
+				$size       = $size_array[1];
+				$size_found = true;
+			}
+		}
+
+		// A backup proceeds even if the DB size can't be read, but warn so the
+		// disk-space pre-check isn't silently treating an unknown DB as 0 bytes.
+		if ( ! $size_found ) {
+			EE::warning( 'Could not determine database size; disk-space estimate may be low.' );
 		}
 
 		EE::debug( "DB size: $size" );
@@ -1241,7 +1336,10 @@ class Site_Backup_Restore {
 			return [];
 		}
 
-		$backups = explode( PHP_EOL, trim( $output->stdout ) );  // Remove extra whitespace and split
+		// trim()+explode() on empty output yields [''] (one empty element), so
+		// filter blank lines before the empty() check below -- otherwise the
+		// "No remote backups found" branch is unreachable for an empty listing.
+		$backups = array_filter( array_map( 'trim', explode( PHP_EOL, $output->stdout ) ), 'strlen' );
 
 		if ( empty( $backups ) ) {
 			if ( ! $return ) {
@@ -1598,8 +1696,10 @@ class Site_Backup_Restore {
 			return;
 		}
 
-		// Check if we have more backups than allowed
-		if ( count( $backups ) > ( $no_of_backups + 1 ) ) {
+		// Check if we have more backups than allowed. array_slice() below keeps the
+		// first $no_of_backups, so trigger as soon as the count exceeds that (the
+		// previous `+ 1` retained N+1).
+		if ( count( $backups ) > $no_of_backups ) {
 			$backups_to_delete = array_slice( $backups, $no_of_backups );
 
 			EE::log( sprintf( 'Cleaning up old backups. Keeping %d most recent backups.', $no_of_backups ) );
@@ -1962,5 +2062,41 @@ class Site_Backup_Restore {
 			$this->global_backup_lock_handle = null;
 			EE::debug( 'Released global backup lock' );
 		}
+	}
+
+	/**
+	 * Remove the local staging dir on abnormal exit.
+	 *
+	 * The success path removes it and clears $this->staging_dir, so this only
+	 * fires when an error/crash left a half-built archive (backup) or a partial
+	 * download (restore) behind. Idempotent and a no-op once cleared.
+	 *
+	 * @return void
+	 */
+	public function cleanup_staging_dir() {
+		if ( ! empty( $this->staging_dir ) && $this->fs->exists( $this->staging_dir ) ) {
+			$this->fs->remove( $this->staging_dir );
+			EE::debug( 'Cleaned up staging dir after abnormal exit: ' . $this->staging_dir );
+		}
+		$this->staging_dir = null;
+	}
+
+	/**
+	 * Remove any temp SQL query files written into the live web root.
+	 *
+	 * Safety net for an interrupt between a query file being written and its
+	 * inline removal; the success path removes them and clears the list, so this
+	 * is normally a no-op. Idempotent.
+	 *
+	 * @return void
+	 */
+	public function cleanup_temp_query_files() {
+		foreach ( $this->temp_query_files as $query_file ) {
+			if ( $this->fs->exists( $query_file ) ) {
+				$this->fs->remove( $query_file );
+				EE::debug( 'Cleaned up leftover query file: ' . $query_file );
+			}
+		}
+		$this->temp_query_files = [];
 	}
 }
