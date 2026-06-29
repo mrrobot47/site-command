@@ -283,15 +283,6 @@ class Site_Backup_Restore {
 		$backup_id  = \EE\Utils\get_flag_value( $assoc_args, 'id' );
 		$backup_dir = EE_BACKUP_DIR . '/' . $this->site_data['site_url'];
 
-		// Track the staging dir so an abnormal exit purges the downloaded archive
-		// instead of leaving a stale partial download that a later run might reuse.
-		$this->staging_dir = $backup_dir;
-		register_shutdown_function( [ $this, 'cleanup_staging_dir' ] );
-
-		if ( ! $this->fs->exists( $backup_dir ) ) {
-			$this->fs->mkdir( $backup_dir );
-		}
-
 		if ( $backup_id ) {
 
 			// verify_backup_id() lists remote backups (rclone lsf) before the
@@ -308,6 +299,17 @@ class Site_Backup_Restore {
 		}
 
 		$this->pre_restore_check();
+
+		// Track the staging dir for shutdown cleanup only AFTER pre_restore_check()
+		// has acquired this site's lock. Setting it earlier would let an early exit
+		// (e.g. invalid backup id, lock held by another process) delete a dir that a
+		// concurrent backup/restore of the same site is actively writing into.
+		$this->staging_dir = $backup_dir;
+		register_shutdown_function( [ $this, 'cleanup_staging_dir' ] );
+
+		if ( ! $this->fs->exists( $backup_dir ) ) {
+			$this->fs->mkdir( $backup_dir );
+		}
 
 		if ( 'wp' === $this->site_data['site_type'] ) {
 			$this->restore_wp( $backup_dir );
@@ -1016,14 +1018,13 @@ class Site_Backup_Restore {
 			EE::debug( 'Site size with db: ' . $site_size );
 		}
 
-		// Headroom for the transient uncompressed SQL dump (written into the web
-		// root, then moved into the staging dir -- briefly on disk twice when
-		// EE_ROOT_DIR and EE_BACKUP_DIR share a filesystem) and the growing
-		// archive. Requiring free space >= the full uncompressed source already
-		// covers the compressed archive (7z output <= input); add the dump size
-		// again plus a 10% slack so a near-full disk fails the check up front
-		// instead of part-way through the archive.
-		$required_size = (int) ceil( ( $site_size + $db_size ) * 1.1 );
+		// Require free space >= the full uncompressed source ($site_size already
+		// includes the DB) plus 10% slack. The compressed archive is bounded by the
+		// source (7z output <= input), and the transient uncompressed SQL dump is a
+		// copy of the DB that already lives in $site_size, so a flat 10% headroom
+		// for filesystem slack / archive overhead is enough -- without re-adding the
+		// DB a second time, which would false-reject DB-heavy sites.
+		$required_size = (int) ceil( $site_size * 1.1 );
 
 		$free_space = disk_free_space( EE_BACKUP_DIR );
 		if ( false === $free_space ) {
@@ -1229,7 +1230,10 @@ class Site_Backup_Restore {
 	 * A missing directory returns 0 (some archived dirs are optional, e.g. a
 	 * site's config/ may not exist yet) rather than aborting. Files whose size
 	 * can't be read are counted as 0 but raise a warning so the disk-space
-	 * pre-check isn't silently under-estimating.
+	 * pre-check isn't silently under-estimating. CATCH_GET_CHILD makes an
+	 * untraversable subdirectory (e.g. permission denied) be skipped rather than
+	 * throw UnexpectedValueException and abort the whole backup; such a subtree is
+	 * simply not counted (the estimate may then be low).
 	 */
 	private function dir_size( string $directory ) {
 		$size = 0;
@@ -1240,8 +1244,12 @@ class Site_Backup_Restore {
 			return 0;
 		}
 
-		$files       = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $directory, \FilesystemIterator::SKIP_DOTS ) );
-		$unreadable  = 0;
+		$files = new \RecursiveIteratorIterator(
+			new \RecursiveDirectoryIterator( $directory, \FilesystemIterator::SKIP_DOTS ),
+			\RecursiveIteratorIterator::LEAVES_ONLY,
+			\RecursiveIteratorIterator::CATCH_GET_CHILD
+		);
+		$unreadable = 0;
 
 		foreach ( $files as $file ) {
 			if ( ! $file->isReadable() ) {
@@ -2074,9 +2082,16 @@ class Site_Backup_Restore {
 	 * @return void
 	 */
 	public function cleanup_staging_dir() {
-		if ( ! empty( $this->staging_dir ) && $this->fs->exists( $this->staging_dir ) ) {
-			$this->fs->remove( $this->staging_dir );
-			EE::debug( 'Cleaned up staging dir after abnormal exit: ' . $this->staging_dir );
+		// Never throw from a shutdown safety net: Filesystem::remove() raises
+		// IOException on a failed unlink (e.g. permission denied), and a throw here
+		// would abort the remaining shutdown handlers (lock release, dash callback).
+		try {
+			if ( ! empty( $this->staging_dir ) && $this->fs->exists( $this->staging_dir ) ) {
+				$this->fs->remove( $this->staging_dir );
+				EE::debug( 'Cleaned up staging dir after abnormal exit: ' . $this->staging_dir );
+			}
+		} catch ( \Throwable $e ) {
+			EE::debug( 'Could not clean up staging dir ' . $this->staging_dir . ': ' . $e->getMessage() );
 		}
 		$this->staging_dir = null;
 	}
@@ -2091,10 +2106,17 @@ class Site_Backup_Restore {
 	 * @return void
 	 */
 	public function cleanup_temp_query_files() {
+		// First-registered shutdown handler: must never throw, or the remaining
+		// handlers (staging cleanup, lock release, dash callback) would be skipped.
+		// Filesystem::remove() raises IOException on a failed unlink.
 		foreach ( $this->temp_query_files as $query_file ) {
-			if ( $this->fs->exists( $query_file ) ) {
-				$this->fs->remove( $query_file );
-				EE::debug( 'Cleaned up leftover query file: ' . $query_file );
+			try {
+				if ( $this->fs->exists( $query_file ) ) {
+					$this->fs->remove( $query_file );
+					EE::debug( 'Cleaned up leftover query file: ' . $query_file );
+				}
+			} catch ( \Throwable $e ) {
+				EE::debug( 'Could not clean up query file ' . $query_file . ': ' . $e->getMessage() );
 			}
 		}
 		$this->temp_query_files = [];
