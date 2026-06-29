@@ -689,7 +689,7 @@ class Site_Backup_Restore {
 
 		$this->fs->mkdir( $backup_dir . '/sql' );
 
-		// Best-effort layer-1 quoting of DB credentials (consistent with restore_db()/get_db_size()).
+		// Best-effort layer-1 quoting of DB credentials (consistent with get_db_size()).
 		// NOTE: the value still passes through a second double-quoted `bash -c "$command"` layer
 		// inside `ee shell` that escapeshellarg cannot protect, so a password containing ` " or $
 		// can still break the dump. Fully hardening that inner wrapper is out of scope here.
