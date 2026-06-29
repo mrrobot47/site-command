@@ -34,6 +34,10 @@ class Site_Backup_Restore {
 	public $site_data;
 	private $rclone_config_path;
 
+	// Remote backup size in bytes, fetched in pre_restore_check() and reused to
+	// verify the downloaded archive is not truncated before destructive restore.
+	private $remote_backup_size = null;
+
 	// Properties for EasyDash callback handling
 	private $dash_auth_enabled = false;
 	private $dash_backup_id;
@@ -713,20 +717,14 @@ class Site_Backup_Restore {
 		$db_user     = $this->site_data['db_user'];
 		$db_password = $this->site_data['db_password'];
 		$db_host     = $this->site_data['db_host'];
-		$args        = [ 'shell', $this->site_data['site_url'] ];
-		$options     = [ 'skip-tty' => true ];
 
-		$command = sprintf( 'wp config set DB_NAME %s', $db_name );
-		EE::run_command( $args, [ 'command' => $command ], $options );
-
-		$command = sprintf( 'wp config set DB_USER %s', $db_user );
-		EE::run_command( $args, [ 'command' => $command ], $options );
-
-		$command = sprintf( 'wp config set DB_PASSWORD %s', $db_password );
-		EE::run_command( $args, [ 'command' => $command ], $options );
-
-		$command = sprintf( 'wp config set DB_HOST %s', $db_host );
-		EE::run_command( $args, [ 'command' => $command ], $options );
+		// Abort on failure: wrong/unset DB constants leave the restored site unable to
+		// connect. Each value is escapeshellarg'd so it survives both shell layers
+		// intact (DB passwords routinely contain shell metacharacters).
+		$this->run_checked_shell_command( sprintf( 'wp config set DB_NAME %s', escapeshellarg( $db_name ) ), 'Failed to set DB_NAME in wp-config.' );
+		$this->run_checked_shell_command( sprintf( 'wp config set DB_USER %s', escapeshellarg( $db_user ) ), 'Failed to set DB_USER in wp-config.' );
+		$this->run_checked_shell_command( sprintf( 'wp config set DB_PASSWORD %s', escapeshellarg( $db_password ) ), 'Failed to set DB_PASSWORD in wp-config.' );
+		$this->run_checked_shell_command( sprintf( 'wp config set DB_HOST %s', escapeshellarg( $db_host ) ), 'Failed to set DB_HOST in wp-config.' );
 	}
 
 	private function maybe_restore_custom_docker_compose( $backup_dir ) {
@@ -758,28 +756,100 @@ class Site_Backup_Restore {
 	private function restore_db( $sql_file, $container_path ) {
 		EE::log( 'Restoring database.' );
 
-		$site_url    = $this->site_data['site_url'];
 		$db_user     = $this->site_data['db_user'];
 		$db_password = $this->site_data['db_password'];
 		$db_host     = $this->site_data['db_host'];
 		$db_name     = $this->site_data['db_name'];
 		$sql_path    = "/var/www/$container_path/" . basename( $sql_file ); // Use basename for safety
 
-		// Corrected command with proper escaping and error suppression for password
-		$restore_command = sprintf( "mysql --skip-ssl -u '%s' -p'%s' -h '%s' '%s' < '%s' 2>/dev/null", $db_user, $db_password, $db_host, $db_name, $sql_path );
+		// Keep mysql's own stderr (2>&1) instead of discarding it to /dev/null so a
+		// failed import surfaces a real diagnostic. The password is single-quoted in
+		// the command, which is safe inside the single-quoted --command built below.
+		$restore_command = sprintf( "mysql --skip-ssl -u '%s' -p'%s' -h '%s' '%s' < '%s' 2>&1", $db_user, $db_password, $db_host, $db_name, $sql_path );
 
-		$args       = [ 'shell', $site_url ];
-		$assoc_args = [ 'command' => $restore_command ];
-		$options    = [ 'skip-tty' => true ];
-		EE::run_command( $args, $assoc_args, $options );
+		// A failed import must abort the restore instead of being reported as success.
+		$this->run_checked_shell_command( $restore_command, 'Database restore failed.' );
+	}
+
+	/**
+	 * Run a command inside the site container via `ee shell` and abort on failure.
+	 *
+	 * EE::run_command() does not surface the in-container command's exit code, so
+	 * critical restore steps are launched as a child `ee shell` process (which exits
+	 * non-zero when the command fails) and the return code is checked here.
+	 *
+	 * @param string $command       Command to run inside the container.
+	 * @param string $error_message Message for EE::error() if the command fails.
+	 */
+	private function run_checked_shell_command( $command, $error_message ) {
+		$output = EE::launch( sprintf( 'ee shell %s --skip-tty --command=%s', $this->site_data['site_url'], escapeshellarg( $command ) ) );
+
+		if ( $output->return_code ) {
+			EE::error( $error_message . ' ' . trim( $output->stdout . ' ' . $output->stderr ) );
+		}
+	}
+
+	/**
+	 * Ensure the site archive exists and is intact before any destructive restore.
+	 *
+	 * The download target is reused if it already exists on disk, so a truncated
+	 * archive left by an interrupted prior run would otherwise be extracted right
+	 * after `rm -rf <app>/*`. Verify the local archive against the remote size (when
+	 * known) and a `unzip -t` integrity test; on failure re-download once and re-test,
+	 * then abort rather than extracting a corrupt archive over the live site.
+	 *
+	 * @param string $backup_dir  Local directory holding the downloaded backup.
+	 * @param string $backup_app  Path to the site `.zip` archive within $backup_dir.
+	 */
+	private function ensure_valid_backup_archive( $backup_dir, $backup_app ) {
+		if ( ! $this->fs->exists( $backup_app ) ) {
+			$this->rclone_download( $backup_dir );
+		} elseif ( ! $this->is_backup_archive_valid( $backup_app ) ) {
+			// A pre-existing archive that fails verification is likely a partial
+			// download from an interrupted run; discard it and fetch a fresh copy.
+			EE::warning( 'Existing backup archive is incomplete or corrupt. Re-downloading.' );
+			$this->fs->remove( $backup_app );
+			$this->rclone_download( $backup_dir );
+		}
+
+		if ( ! $this->fs->exists( $backup_app ) || ! $this->is_backup_archive_valid( $backup_app ) ) {
+			EE::error( 'Downloaded backup archive is incomplete or corrupt. Aborting restore to avoid destroying the existing site.' );
+		}
+	}
+
+	/**
+	 * Validate a downloaded backup archive: local size must match the remote size
+	 * reported by `rclone size` (when available) and `unzip -t` must pass.
+	 *
+	 * @param string $backup_app Path to the `.zip` archive.
+	 *
+	 * @return bool True if the archive looks complete and intact.
+	 */
+	private function is_backup_archive_valid( $backup_app ) {
+		$local_size = $this->fs->exists( $backup_app ) ? filesize( $backup_app ) : false;
+
+		if ( false === $local_size || 0 === $local_size ) {
+			return false;
+		}
+
+		// The remote size covers the whole backup folder (archive + conf/metadata),
+		// so the single archive can only ever be smaller; treat a local archive that
+		// already exceeds the remote total as truncated/corrupt remote bookkeeping.
+		if ( null !== $this->remote_backup_size && $local_size > $this->remote_backup_size ) {
+			EE::debug( sprintf( 'Backup archive size (%d) exceeds remote backup size (%d).', $local_size, $this->remote_backup_size ) );
+
+			return false;
+		}
+
+		// `unzip -t` reads the full archive and reports a non-zero exit on truncation
+		// or CRC errors -- the definitive check that extraction will not fail midway.
+		return (bool) EE::exec( sprintf( 'unzip -t %s', escapeshellarg( $backup_app ) ) );
 	}
 
 	private function restore_site( $backup_dir ) {
 		$backup_app = $backup_dir . '/' . $this->site_data['site_url'] . '.zip';
 
-		if ( ! $this->fs->exists( $backup_app ) ) {
-			$this->rclone_download( $backup_dir );
-		}
+		$this->ensure_valid_backup_archive( $backup_dir, $backup_app );
 
 		EE::log( 'Restoring site files.' );
 
@@ -788,8 +858,12 @@ class Site_Backup_Restore {
 		$remove_command = sprintf( 'rm -rf %s/*', $site_app_dir );
 		EE::exec( $remove_command );
 
+		// The app dir was just wiped; a failed extraction here leaves an empty site,
+		// so abort instead of proceeding to report a successful restore.
 		$restore_command = sprintf( 'unzip -o %s -d %s', $backup_app, $site_app_dir );
-		EE::exec( $restore_command );
+		if ( ! EE::exec( $restore_command ) ) {
+			EE::error( 'Failed to extract site files from backup archive.' );
+		}
 
 		$chown_command = sprintf( 'chown -R www-data:www-data %s', \EE\Utils\trailingslashit( $site_app_dir ) );
 		EE::exec( $chown_command );
@@ -811,9 +885,7 @@ class Site_Backup_Restore {
 	private function restore_wp( $backup_dir ) {
 		$backup_app = $backup_dir . '/' . $this->site_data['site_url'] . '.zip';
 
-		if ( ! $this->fs->exists( $backup_app ) ) {
-			$this->rclone_download( $backup_dir );
-		}
+		$this->ensure_valid_backup_archive( $backup_dir, $backup_app );
 
 		EE::log( 'Restoring site files.' );
 
@@ -824,7 +896,14 @@ class Site_Backup_Restore {
 		$unzip_meta_command = sprintf( 'unzip -o %s meta.json -d %s', $backup_app, $backup_dir );
 		EE::exec( $unzip_meta_command );
 
-		$meta_data  = json_decode( file_get_contents( $backup_dir . '/meta.json' ), true );
+		// A missing/corrupt meta.json (or one without wordpressVersion) would make
+		// $wp_version empty, and `wp core download` with an empty --version silently
+		// installs the LATEST WordPress -- a different version than was backed up.
+		$meta_file = $backup_dir . '/meta.json';
+		$meta_data = $this->fs->exists( $meta_file ) ? json_decode( file_get_contents( $meta_file ), true ) : null;
+		if ( ! is_array( $meta_data ) || empty( $meta_data['wordpressVersion'] ) ) {
+			EE::error( 'Backup metadata (meta.json) is missing or corrupt. Cannot determine the WordPress version to restore.' );
+		}
 		$wp_version = $meta_data['wordpressVersion'];
 
 		// $wp_version is read from the backup's meta.json and interpolated into the
@@ -833,23 +912,27 @@ class Site_Backup_Restore {
 		// only ever contains [0-9A-Za-z.-]; strip anything else so no shell
 		// metacharacter can survive either shell layer.
 		$wp_version = preg_replace( '/[^0-9A-Za-z.\-]/', '', (string) $wp_version );
+		if ( '' === $wp_version ) {
+			EE::error( 'Backup metadata contains an invalid WordPress version.' );
+		}
 
 		// wp core download extracts the WordPress archive in PHP, which needs more
 		// than a typical site's 128M memory_limit and OOMs on low-RAM hosts. Run it
 		// under a higher limit via `php -d memory_limit=256M $(which wp)`, matching
-		// the site-creation path in site-type-wp. The command runs through `bash -c`
-		// in the container, so the `$` in `$(which wp)` is escaped here to defer the
-		// substitution to the container's shell (EE's `wp` is the phar, invoked
-		// directly, so the WP_CLI_PHP_ARGS env var would not apply).
-		$args       = [ 'shell', $this->site_data['site_url'] ];
-		$assoc_args = [ 'command' => sprintf( "php -d memory_limit=256M \\$(which wp) core download --force --version=%s", $wp_version ) ];
-		$options    = [ 'skip-tty' => true ];
-		EE::run_command( $args, $assoc_args, $options );
+		// the site-creation path in site-type-wp. A failed download must abort: the
+		// restore otherwise removes wp-content with no fresh core to replace it.
+		// $(which wp) stays unescaped so escapeshellarg single-quotes it for the host
+		// and the container's `bash -c` does the substitution (EE's `wp` is the phar,
+		// invoked directly, so the WP_CLI_PHP_ARGS env var would not apply).
+		$core_download_command = sprintf( 'php -d memory_limit=256M $(which wp) core download --force --version=%s', $wp_version );
+		$this->run_checked_shell_command( $core_download_command, 'Failed to download WordPress core for restore.' );
 
 		$this->maybe_restore_wp_config( $backup_dir );
 
 		$restore_command = sprintf( 'unzip -o %s sql/%s.sql -d %s/app/', $backup_app, $this->site_data['site_url'], $this->site_data['site_fs_path'] );
-		EE::exec( $restore_command );
+		if ( ! EE::exec( $restore_command ) ) {
+			EE::error( 'Failed to extract database dump from backup archive.' );
+		}
 
 		$this->restore_db( $this->site_data['site_url'] . '.sql', 'sql' );
 		$this->fs->remove( $this->site_data['site_fs_path'] . '/app/sql' );
@@ -859,20 +942,30 @@ class Site_Backup_Restore {
 		if ( is_link( $site_dir . '/wp-content/uploads' ) ) {
 			// move the symlink one level up for time being
 			$mv_command = sprintf( 'mv %s/wp-content/uploads %s/uploads', $site_dir, $site_dir );
-			EE::exec( $mv_command );
-			$uploads_moved = true;
+			// Only mark as moved if the mv actually succeeded -- otherwise the
+			// `rm -rf wp-content` below would delete the live uploads dir and the
+			// move-back step would silently recreate nothing.
+			if ( EE::exec( $mv_command ) ) {
+				$uploads_moved = true;
+			} else {
+				EE::error( 'Failed to preserve wp-content/uploads before restore. Aborting to avoid data loss.' );
+			}
 		}
 
 		// Remove all files from wp-content except uploads
 		$this->fs->remove( $site_dir . '/wp-content' );
 
 		$wp_content_command = sprintf( "unzip -o %s 'wp-content/*' -x 'wp-content/uploads/*' -d %s", $backup_app, $site_dir );
-		EE::exec( $wp_content_command );
+		if ( ! EE::exec( $wp_content_command ) ) {
+			EE::error( 'Failed to restore wp-content from backup archive.' );
+		}
 
 		if ( $uploads_moved ) {
 			// move the uploads directory back to wp-content
 			$mv_command = sprintf( 'mv %s/uploads %s/wp-content/uploads', $site_dir, $site_dir );
-			EE::exec( $mv_command );
+			if ( ! EE::exec( $mv_command ) ) {
+				EE::error( 'Failed to restore the preserved wp-content/uploads directory.' );
+			}
 		}
 
 		$uploads_command = sprintf( "unzip -o %s 'wp-content/uploads/*' -d %s", $backup_app, $site_dir );
@@ -1062,7 +1155,16 @@ class Site_Backup_Restore {
 			EE::error( 'Failed to get remote backup size.' );
 		}
 
-		$remote_size = json_decode( $output->stdout, true )['bytes'];
+		// `rclone size --json` must decode to an object with a numeric `bytes`;
+		// otherwise `null['bytes']` would make the disk-space guard below a no-op
+		// and leave $remote_backup_size unusable for the archive integrity check.
+		$remote_size_data = json_decode( $output->stdout, true );
+		if ( ! is_array( $remote_size_data ) || ! isset( $remote_size_data['bytes'] ) || ! is_numeric( $remote_size_data['bytes'] ) ) {
+			EE::error( 'Could not determine remote backup size: rclone returned invalid data.' );
+		}
+
+		$remote_size              = (int) $remote_size_data['bytes'];
+		$this->remote_backup_size = $remote_size;
 		EE::debug( 'Remote backup size: ' . $remote_size );
 
 		$free_space = disk_free_space( EE_BACKUP_DIR );
@@ -1109,6 +1211,12 @@ class Site_Backup_Restore {
 
 
 		$backup_site_data = json_decode( file_get_contents( $backup_site_info ), true );
+
+		// A missing/corrupt metadata.json (or one lacking the keys compared below)
+		// would otherwise silently bypass the site-type / public-dir match checks.
+		if ( ! is_array( $backup_site_data ) || ! isset( $backup_site_data['site_type'], $backup_site_data['site_container_fs_path'] ) ) {
+			EE::error( 'Backup metadata is missing or corrupt. Cannot safely restore this backup.' );
+		}
 
 		if ( $this->site_data['site_type'] !== $backup_site_data['site_type'] ) {
 			EE::error( 'Site type does not match with the backed up site.' );
