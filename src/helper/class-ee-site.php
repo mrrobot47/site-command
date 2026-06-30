@@ -2250,10 +2250,47 @@ abstract class EE_Site_Command {
 		}
 
 		if ( $this->fs->exists( $ssl_key ) && $this->fs->exists( $ssl_crt ) ) {
+			// Validate cert contents before storing paths, else a malformed/mismatched pair silently breaks nginx-proxy on reload.
+			$this->assert_valid_cert_key_pair( file_get_contents( $ssl_crt ), file_get_contents( $ssl_key ) );
+
 			$this->site_data['ssl_key'] = realpath( $ssl_key );
 			$this->site_data['ssl_crt'] = realpath( $ssl_crt );
 		} else {
 			throw new \Exception( 'ssl-key OR ssl-crt path does not exist' );
+		}
+	}
+
+	/**
+	 * Assert that a PEM certificate and private key are valid, matching and not expired.
+	 *
+	 * @param string $crt_contents Certificate file contents (PEM).
+	 * @param string $key_contents Private key file contents (PEM).
+	 */
+	protected function assert_valid_cert_key_pair( $crt_contents, $key_contents ) {
+
+		$cert_info = openssl_x509_parse( $crt_contents );
+		if ( false === $cert_info ) {
+			EE::error( 'The supplied --ssl-crt is not a valid/parseable certificate.' );
+		}
+
+		if ( false === openssl_pkey_get_private( $key_contents ) ) {
+			EE::error( 'The supplied --ssl-key is not a valid private key.' );
+		}
+
+		if ( ! openssl_x509_check_private_key( $crt_contents, $key_contents ) ) {
+			EE::error( 'The supplied certificate and private key do not match.' );
+		}
+
+		// Warn (but allow) on an expired or soon-to-expire cert: clone/restore may legitimately re-supply an existing expired cert, so don't block.
+		if ( isset( $cert_info['validTo_time_t'] ) ) {
+			$now              = time();
+			$expiry_threshold = 30 * 24 * 60 * 60; // 30 days in seconds.
+
+			if ( $cert_info['validTo_time_t'] < $now ) {
+				EE::warning( sprintf( 'The supplied certificate expired on %s.', date( 'Y-m-d', $cert_info['validTo_time_t'] ) ) );
+			} elseif ( $cert_info['validTo_time_t'] - $now < $expiry_threshold ) {
+				EE::warning( sprintf( 'The supplied certificate expires on %s (within 30 days).', date( 'Y-m-d', $cert_info['validTo_time_t'] ) ) );
+			}
 		}
 	}
 
