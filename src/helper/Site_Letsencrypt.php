@@ -691,6 +691,9 @@ class Site_Letsencrypt {
 		if ( $this->repository->hasDomainDistinguishedName( $domain ) ) {
 			$original = $this->repository->loadDomainDistinguishedName( $domain );
 
+			// Honor an updated le-mail on renewal; fall back to stored email only when none is passed.
+			$email_address = ! empty( $email ) ? $email : $original->getEmailAddress();
+
 			$distinguishedName = new DistinguishedName(
 				$domain,
 				$original->getCountryName(),
@@ -698,7 +701,7 @@ class Site_Letsencrypt {
 				$original->getLocalityName(),
 				$original->getOrganizationName(),
 				$original->getOrganizationalUnitName(),
-				$original->getEmailAddress(),
+				$email_address,
 				$alternativeNames
 			);
 		} else {
