@@ -1678,6 +1678,11 @@ abstract class EE_Site_Command {
 			$this->site_data = get_site_info( $args );
 		}
 
+		// SSL verification issues a Let's Encrypt cert via ACME, which is meaningless for non-LE certs and would clobber custom/self/inherited ones.
+		if ( 'le' !== $this->site_data['site_ssl'] ) {
+			EE::error( 'SSL verification is only applicable to Let\'s Encrypt certificates.' );
+		}
+
 		if ( ! isset( $this->le_mail ) ) {
 			$this->le_mail = \EE::get_config( 'le-mail' ) ?? \EE::input( 'Enter your mail id: ' );
 		}
