@@ -610,14 +610,22 @@ abstract class EE_Site_Command {
 		$old_certs = $client->loadDomainCertificates( $all_domains );
 
 		if ( $is_ssl ) {
-			// Update SSL.
-			EE::log( 'Updating and force renewing SSL certificate to accomodated alias domain changes.' );
-			try {
-				$this->ssl_renew( [ $this->site_data['site_url'] ], [ 'force' => true ] );
-			} catch ( \Exception $e ) {
-				EE::warning( 'Certificate could not be issued. Reverting back to original state.' );
-				$this->enable( [ $this->site_data['site_url'] ], [ 'refresh' => 'true' ] );
-				EE::error( $e->getMessage() );
+			// Only Let's Encrypt certs can be reissued by EE to cover the new alias-domain set.
+			if ( 'le' === $this->site_data['site_ssl'] ) {
+				// Update SSL.
+				EE::log( 'Updating and force renewing SSL certificate to accomodated alias domain changes.' );
+				try {
+					$this->ssl_renew( [ $this->site_data['site_url'] ], [ 'force' => true ] );
+				} catch ( \Exception $e ) {
+					EE::warning( 'Certificate could not be issued. Reverting back to original state.' );
+					$this->enable( [ $this->site_data['site_url'] ], [ 'refresh' => 'true' ] );
+					EE::error( $e->getMessage() );
+				}
+			} elseif ( 'custom' === $this->site_data['site_ssl'] ) {
+				EE::warning( 'Custom SSL certificate is not renewed automatically. Please ensure the certificate you provided covers the updated alias-domain set.' );
+			} else {
+				// self-signed certs are wildcard and inherited certs use the parent site's cert; no cert action needed.
+				EE::log( 'No SSL certificate action needed for ' . $this->site_data['site_ssl'] . ' SSL on alias domain change.' );
 			}
 		}
 
