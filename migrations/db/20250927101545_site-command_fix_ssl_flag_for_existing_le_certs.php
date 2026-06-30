@@ -51,7 +51,8 @@ class FixSslFlagForExistingLeCerts extends Base {
 			}
 
 			if ( $crt_exists && $key_exists && $chain_exists ) {
-				if ( empty( $db_ssl ) || $db_ssl !== 'le' ) {
+				// Only repair sites with an unset SSL flag; never override an explicit custom/self/inherit (or le) choice.
+				if ( empty( $db_ssl ) ) {
 					// Check if the cert is a valid Let's Encrypt cert using CertificateParser
 					try {
 						$crt_pem = file_get_contents( $crt );
