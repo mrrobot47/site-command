@@ -405,7 +405,7 @@ class Site_Letsencrypt {
 					$authorizationChallengeToCleanup[] = $authorizationChallenge;
 				} catch ( \Exception $e ) {
 					\EE::debug( $e->getMessage() );
-					\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
+					\EE::warning( 'Challenge Authorization failed (' . $e->getMessage() . '). Check logs and check if your domain is pointed correctly to this server.' );
 
 					$site_name = $domains[0];
 					$site_name = str_replace( '*.', '', $site_name );
@@ -641,18 +641,14 @@ class Site_Letsencrypt {
 			return true;
 
 		} catch ( \Exception $e ) {
-			\EE::warning( 'A critical error occured during certificate renewal' );
+			\EE::warning( 'A critical error occurred during certificate renewal: ' . $e->getMessage() );
 			\EE::debug( print_r( $e, true ) );
-
-			\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
 			\EE::log( 'You can fix the issue and re-run: ee site ssl-verify ' . $domains[0] );
 
 			return false;
 		} catch ( \Throwable $e ) {
-			\EE::warning( 'A critical error occured during certificate renewal' );
+			\EE::warning( 'A critical error occurred during certificate renewal: ' . $e->getMessage() );
 			\EE::debug( print_r( $e, true ) );
-
-			\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
 			\EE::log( 'You can fix the issue and re-run: ee site ssl-verify ' . $domains[0] );
 
 			return false;
