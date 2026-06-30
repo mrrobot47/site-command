@@ -16,6 +16,7 @@ use AcmePhp\Core\Challenge\Http\SimpleHttpSolver;
 use AcmePhp\Core\Challenge\WaitingValidator;
 use AcmePhp\Core\Exception\Protocol\ChallengeNotSupportedException;
 use AcmePhp\Core\Exception\Protocol\CertificateRevocationException;
+use AcmePhp\Core\Exception\Server\RateLimitedServerException;
 use AcmePhp\Core\Protocol\AuthorizationChallenge;
 use AcmePhp\Core\Protocol\ResourcesDirectory;
 use AcmePhp\Core\Protocol\RevocationReason;
@@ -208,7 +209,12 @@ class Site_Letsencrypt {
 		try {
 			$order = $this->client->requestOrder( $domains );
 		} catch ( \Exception $e ) {
-			\EE::warning( 'It seems you\'re in local environment or using non-public domain, please check logs. Skipping letsencrypt.' );
+			// A rate-limit is a distinct failure from a non-public domain; emit a clear, actionable message for it.
+			if ( $this->is_rate_limit_exception( $e ) ) {
+				\EE::warning( 'Let\'s Encrypt rate limit hit for: ' . implode( ', ', $domains ) . '. Please wait before retrying. Ref: https://letsencrypt.org/docs/rate-limits/' );
+			} else {
+				\EE::warning( 'It seems you\'re in local environment or using non-public domain, please check logs. Skipping letsencrypt.' );
+			}
 			\EE::log( 'You can fix the issue and re-run: ee site ssl-verify ' . $domains[0] );
 
 			return false;
@@ -569,6 +575,26 @@ class Site_Letsencrypt {
 	}
 
 	/**
+	 * Whether the given exception represents a Let's Encrypt rate-limit response.
+	 *
+	 * Matches the acmephp RateLimitedServerException as well as the 'rateLimited' ACME error
+	 * type / HTTP 429 surfaced in the message, so callers can show rate-limit-specific guidance.
+	 *
+	 * @param \Throwable $e
+	 *
+	 * @return bool
+	 */
+	private function is_rate_limit_exception( $e ) {
+		if ( $e instanceof RateLimitedServerException ) {
+			return true;
+		}
+
+		$message = strtolower( $e->getMessage() );
+
+		return ( false !== strpos( $message, 'ratelimited' ) || false !== strpos( $message, 'too many' ) );
+	}
+
+	/**
 	 * Renew a given domain certificate.
 	 *
 	 * @param string $domain
@@ -644,7 +670,12 @@ class Site_Letsencrypt {
 			\EE::warning( 'A critical error occured during certificate renewal' );
 			\EE::debug( print_r( $e, true ) );
 
-			\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
+			// A rate-limit is not a misconfigured-domain failure; point the user to the LE rate-limit docs instead.
+			if ( $this->is_rate_limit_exception( $e ) ) {
+				\EE::warning( 'Let\'s Encrypt rate limit hit for: ' . $domain . '. Please wait before retrying. Ref: https://letsencrypt.org/docs/rate-limits/' );
+			} else {
+				\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
+			}
 			\EE::log( 'You can fix the issue and re-run: ee site ssl-verify ' . $domains[0] );
 
 			return false;
@@ -652,7 +683,12 @@ class Site_Letsencrypt {
 			\EE::warning( 'A critical error occured during certificate renewal' );
 			\EE::debug( print_r( $e, true ) );
 
-			\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
+			// A rate-limit is not a misconfigured-domain failure; point the user to the LE rate-limit docs instead.
+			if ( $this->is_rate_limit_exception( $e ) ) {
+				\EE::warning( 'Let\'s Encrypt rate limit hit for: ' . $domain . '. Please wait before retrying. Ref: https://letsencrypt.org/docs/rate-limits/' );
+			} else {
+				\EE::warning( 'Challenge Authorization failed. Check logs and check if your domain is pointed correctly to this server.' );
+			}
 			\EE::log( 'You can fix the issue and re-run: ee site ssl-verify ' . $domains[0] );
 
 			return false;
