@@ -119,6 +119,14 @@ class Site_Letsencrypt {
 	private function setAcmeClient() {
 
 		if ( ! $this->repository->hasAccountKeyPair() ) {
+			// A missing account key alongside existing LE domain state means the key was lost (host migration / snapshot restore),
+			// not a first run. Generating a new one silently orphans the old LE registration, so warn before regenerating.
+			if ( $this->hasExistingLetsencryptState() ) {
+				\EE::warning( 'Let\'s Encrypt account key not found, but existing certificate state was detected under ' . $this->conf_dir . ' — the account key appears to have been lost (e.g. host migration or snapshot restore).' );
+				\EE::warning( 'A new Let\'s Encrypt account will be registered. The previous account is now orphaned, so existing certificates will NOT renew under it until they are re-issued.' );
+				\EE::warning( 'To preserve the existing account, restore a backup of ' . $this->conf_dir . '/account/ before re-running.' );
+			}
+
 			\EE::debug( 'No account key pair was found, generating one.' );
 			\EE::debug( 'Generating a key pair' );
 
@@ -138,6 +146,23 @@ class Site_Letsencrypt {
 
 		$this->client = new EEAcmeClient( $secureHttpClient, 'https://acme-v02.api.letsencrypt.org/directory', $csrSigner );
 
+	}
+
+	/**
+	 * Cheap, DB-free check for pre-existing Let's Encrypt state on disk.
+	 *
+	 * Looks only at AcmePhp's own per-domain dirs under acme-conf (var/{domain} = orders/challenges/DN,
+	 * certs/{domain} = LE keypairs/certs). These are written solely by AcmePhp, so their presence proves
+	 * the account key existed before. We deliberately ignore services/nginx-proxy/certs/, which also holds
+	 * custom/self-signed certs and would false-positive on a host that never used Let's Encrypt.
+	 *
+	 * @return bool True if prior LE domain state exists.
+	 */
+	private function hasExistingLetsencryptState() {
+		$var_domains  = glob( $this->conf_dir . '/var/*', GLOB_ONLYDIR );
+		$cert_domains = glob( $this->conf_dir . '/certs/*', GLOB_ONLYDIR );
+
+		return ! empty( $var_domains ) || ! empty( $cert_domains );
 	}
 
 	private function setRepository( $enable_backup = false ) {
