@@ -108,15 +108,35 @@ Feature: Let's Encrypt certificates
     Then the response code should be 200
     And the TLS certificate served for "{LE2}" should be issued by "{LE_ISSUER}"
 
-  # SSL-2: an alias that fails validation only warns; the alias is saved and SSL is marked disabled while the old cert keeps serving.
+  # SSL-2 (fixed on fix/proxy-cache-rollback-and-le-alias): a failed issuance used to only warn, save the alias with SSL "Not Enabled" and revoke the served cert.
   # The alias is under the reserved .invalid TLD: the order is refused outright, so nothing outside *.ee4-test.rt.gw is validated.
-  @known-bug
   Scenario: An alias that fails validation is rejected and the site keeps its certificate
     Given the site "{LE2}" exists, created with "--type=html --ssl=le"
     When I run 'bin/ee site update {LE2} --add-alias-domains=bh-site-command-nx-{RUN_ID}.invalid'
     Then the command should fail
+    And STDERR should contain "Alias domains of {LE2} were not changed"
+    And STDOUT should not contain "Alias domains updated"
     And the "alias_domains" field of site "{LE2}" in the database should be "{LE2}"
     And the "site_ssl" field of site "{LE2}" in the database should be "le"
+    And the directory "{PROXY_DIR}/acme-conf/var/bh-site-command-nx-{RUN_ID}.invalid" should not exist
+    When I wait up to 60 seconds for "https://{LE2}/" to return 200
+    And I send a verified GET request to "https://{LE2}/"
+    Then the response code should be 200
+    And the TLS certificate served for "{LE2}" should cover "{LE2}"
+    When I run 'bin/ee site ssl-renew {LE2}'
+    Then the command should succeed
+    And STDERR should not contain "Only Letsencrypt certificate renewal is supported."
+
+  # WPT-12: turning SSL off removes the certificate and ACME state (no issuance: runs on the site of the scenario above).
+  Scenario: Turning Let's Encrypt off removes the certificate
+    Given the site "{LE2}" exists, created with "--type=html --ssl=le"
+    When I run 'bin/ee site update {LE2} --ssl=off'
+    Then the command should succeed
+    And the file "{PROXY_DIR}/certs/{LE2}.crt" should not exist
+    And the file "{PROXY_DIR}/certs/{LE2}.key" should not exist
+    And the directory "{PROXY_DIR}/acme-conf/certs/{LE2}" should not exist
+    And the directory "{PROXY_DIR}/acme-conf/var/{LE2}" should not exist
+    When I wait up to 60 seconds for "http://{LE2}/" to return 200
 
   # SSL-8: ssl-verify checks only [site] for an HTTP-01 cert that includes www, rotates the acme-conf key and fails with "has not yet been authorized".
   @known-bug
@@ -137,8 +157,7 @@ Feature: Let's Encrypt certificates
     And the directory "{PROXY_DIR}/acme-conf/certs/{LE1}" should not exist
     And the directory "{PROXY_DIR}/acme-conf/var/{LE1}" should not exist
 
-  # SSL-5 / SSL-9: deleting an LE site leaves acme-conf/var/www.<site> (and alias dirs) behind. Run after the delete scenario above.
-  @known-bug
+  # SSL-5 / SSL-9 (fixed on fix/proxy-cache-rollback-and-le-alias): delete used to leave acme-conf/var/www.<site> and alias dirs behind. Run after the delete scenario above.
   Scenario: Deleting a Let's Encrypt site leaves no ACME state behind
     Given the site "{LE1}" does not exist
     Then the directory "{PROXY_DIR}/acme-conf/var/www.{LE1}" should not exist

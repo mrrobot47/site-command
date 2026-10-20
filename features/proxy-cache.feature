@@ -80,6 +80,36 @@ Feature: Proxy cache
     And the file "{PROXY_DIR}/vhost.d/bh-site-command-86-b.test_location" should exist
     And the docker container "services_global-nginx-proxy_1" should be running
 
+  Scenario: Deleting an alias removes its proxy cache location
+    Given the site "bh-site-command-162.test" exists, created with "--type=html --alias-domains=bh-site-command-162-a.test,bh-site-command-162-b.test"
+    When I run 'bin/ee site update bh-site-command-162.test --proxy-cache=on'
+    Then the command should succeed
+    When I run 'bin/ee site update bh-site-command-162.test --delete-alias-domains=bh-site-command-162-a.test'
+    Then the command should succeed
+    And the file "{PROXY_DIR}/vhost.d/bh-site-command-162-a.test_location" should not exist
+    And the file "{PROXY_DIR}/vhost.d/bh-site-command-162-b.test_location" should exist
+    And the file "{PROXY_DIR}/vhost.d/bh-site-command-162.test_location" should exist
+
+  # PRX-6 (fixed on fix/proxy-cache-rollback-and-le-alias): a failed nginx -t during the alias sync used to remove the cache zone but keep the locations using it, so nginx never passed -t again and could not start after a restart.
+  # The broken include is removed right after the update, before any assertion can fail.
+  Scenario: A failed proxy cache alias sync leaves a config nginx can load
+    Given the site "bh-site-command-163.test" exists, created with "--type=html --alias-domains=bh-site-command-163-a.test"
+    When I run 'bin/ee site update bh-site-command-163.test --proxy-cache=on'
+    Then the command should succeed
+    When I write "bh_broken_directive;" to the file "{PROXY_DIR}/conf.d/bh-site-command-163-broken.conf"
+    And I run 'bin/ee site update bh-site-command-163.test --add-alias-domains=bh-site-command-163-b.test'
+    And I remove the file "{PROXY_DIR}/conf.d/bh-site-command-163-broken.conf"
+    Then the command should succeed
+    And STDERR should contain "Could not enable proxy cache on bh-site-command-163.test, nginx config test failed. The previous proxy config was restored."
+    And the file "{PROXY_DIR}/conf.d/bh-site-command-163.test.conf" should exist
+    And the file "{PROXY_DIR}/vhost.d/bh-site-command-163-b.test_location" should not exist
+    When I run 'docker exec services_global-nginx-proxy_1 nginx -t'
+    Then the command should succeed
+    When I run 'docker restart services_global-nginx-proxy_1'
+    Then the command should succeed
+    When I wait up to 60 seconds for "http://bh-site-command-163.test/" to return 200
+    Then the docker container "services_global-nginx-proxy_1" should be running
+
   Scenario: Deleting a proxy-cached site removes its proxy config
     Given the html site "bh-site-command-87.test" exists
     When I run 'bin/ee site update bh-site-command-87.test --proxy-cache=on'

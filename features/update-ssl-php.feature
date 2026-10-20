@@ -85,13 +85,20 @@ Feature: Update SSL and PHP of html sites
     Then the command should fail
     And STDERR should contain "Invalid value specified for 'php'"
 
-  # SC-3: update_ssl() refuses --ssl=off when site_ssl_wildcard=1, and --ssl=self sets that flag on create, so SSL can never be turned off. No open PR.
-  @known-bug
+  # SC-3 (fixed on fix/proxy-cache-rollback-and-le-alias): --ssl=off was refused for sites stored with site_ssl_wildcard=1, which create --ssl=self sets.
+  # WPT-12: --ssl=off also removes the certificate, and the www redirect loses its HTTPS block that loads it.
   Scenario: SSL can be disabled on a site created with self-signed SSL
     Given the site "bh-site-command-71.test" exists, created with "--type=html --ssl=self"
     When I run 'bin/ee site update bh-site-command-71.test --ssl=off'
     Then the command should succeed
     And STDOUT should contain "Disabled SSL for bh-site-command-71.test"
+    And the "site_ssl" field of site "bh-site-command-71.test" in the database should be ""
+    And the file "{PROXY_DIR}/certs/bh-site-command-71.test.crt" should not exist
+    And the file "{PROXY_DIR}/certs/bh-site-command-71.test.key" should not exist
+    And the file "{PROXY_DIR}/conf.d/bh-site-command-71.test-redirect.conf" should not contain "ssl_certificate"
+    When I run 'docker exec services_global-nginx-proxy_1 nginx -t'
+    Then the command should succeed
+    When I wait up to 60 seconds for "http://bh-site-command-71.test/" to return 200
 
   # SC-3: create --ssl=self stores site_ssl_wildcard=1, update --ssl=self saves 0 (init_ssl() only changes the array copy). No open PR.
   @known-bug

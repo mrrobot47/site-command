@@ -55,6 +55,16 @@ Feature: Delete sites
     And the file "{PROXY_DIR}/certs/bh-site-command-33.test.crt" should not exist
     And the file "{PROXY_DIR}/certs/bh-site-command-33.test.key" should not exist
 
+  # WPT-12: delete removes the site's certificate files even when site_ssl is empty (SSL turned off or lost), since nginx-proxy keeps matching them.
+  Scenario: Deleting a site without SSL removes a leftover certificate
+    Given the html site "bh-site-command-161.test" exists
+    When I write "leftover" to the file "{PROXY_DIR}/certs/bh-site-command-161.test.crt"
+    And I write "leftover" to the file "{PROXY_DIR}/certs/bh-site-command-161.test.key"
+    And I run 'bin/ee site delete bh-site-command-161.test --yes'
+    Then the command should succeed
+    And the file "{PROXY_DIR}/certs/bh-site-command-161.test.crt" should not exist
+    And the file "{PROXY_DIR}/certs/bh-site-command-161.test.key" should not exist
+
   Scenario: Deleting a site frees its alias domains
     Given the site "bh-site-command-34.test" exists, created with "--type=html --alias-domains=bh-site-command-34-alias.test"
     And the site "bh-site-command-34-alias.test" does not exist

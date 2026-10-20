@@ -1,16 +1,16 @@
 # site-command Behat coverage
 
-Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 183 scenarios (215 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
+Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 187 scenarios (220 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
 
 ## Tags
 
 | Tag | Scenarios | Meaning |
 |---|---|---|
-| (none of the tags below) | 125 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
-| `@known-bug` | 28 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
-| `@destructive` | 12 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
+| (none of the tags below) | 127 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
+| `@known-bug` | 25 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
+| `@destructive` | 14 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
 | `@remote` | 15 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |
-| `@le` | 11 | Let's Encrypt issuance on `*.ee4-test.rt.gw`. Locally: real LE, at most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. On CI all 11 run against Pebble (`behat/ci/pebble-setup.sh`: EE's hardcoded LE host is redirected to Pebble, `{LE_ISSUER}` comes from `EE_BEHAT_LE_ISSUER`); 8 pass, the 3 `@known-bug` ones fail as expected (SSL-2, SSL-8, SSL-9). |
+| `@le` | 12 | Let's Encrypt issuance on `*.ee4-test.rt.gw`. Locally: real LE, at most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. On CI all 12 run against Pebble (`behat/ci/pebble-setup.sh`: EE's hardcoded LE host is redirected to Pebble, `{LE_ISSUER}` comes from `EE_BEHAT_LE_ISSUER`); 11 pass, the `@known-bug` one fails as expected (SSL-8). SSL-2 and SSL-5/SSL-9 are regular scenarios since the fixes on `fix/proxy-cache-rollback-and-le-alias` (they fail on develop until those merge). |
 | `@le-real` | 0 | Needs the public LE service itself (rate limits, the real chain); never runs on CI. None so far: every `@le` scenario works on Pebble. |
 | `@wp` | 8 | Needs the `wp` site type (site-type-wp in the core checkout) and `ee` on PATH; slow. |
 
@@ -95,10 +95,10 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | Second delete / unknown site | covered | delete: same scenario; site: outline |
 | Prompt answered n / y | covered | delete: Answering no...; Answering yes... |
 | Disabled site | covered | delete: A disabled site can be deleted |
-| SSL files removed (self, LE + revoke) | covered | delete: Deleting a self-signed site removes its certificate; le: Deleting a Let's Encrypt site... |
+| SSL files removed (self, LE + revoke, leftover cert of a site without SSL, WPT-12) | covered | delete: Deleting a self-signed site removes its certificate; Deleting a site without SSL removes a leftover certificate; le: Deleting a Let's Encrypt site... |
 | Proxy cache config removed | covered (@destructive) | pcache: Deleting a proxy-cached site removes its proxy config |
 | Alias domains freed | covered | delete: Deleting a site frees its alias domains |
-| LE leftovers (SSL-5/SSL-9) | covered (known bug) | le: Deleting a Let's Encrypt site leaves no ACME state behind |
+| LE leftovers (SSL-5/SSL-9) | covered | le: Deleting a Let's Encrypt site leaves no ACME state behind |
 | DB/user cleanup for external DB sites, cron rows | not covered | only php/wp sites have DBs and crons (site-type-*/cron-command suites) |
 
 ### list / info
@@ -140,7 +140,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | `--delete-alias-domains`, primary, not a subset | covered | alias: Delete an alias domain; The primary domain cannot be deleted; Deleting an alias the site does not have fails |
 | alias that is a site / alias of another site | covered | alias: Another site cannot be added...; An alias of another site cannot be added |
 | add + delete in one call, wildcard alias | covered | alias: Add and delete aliases in one call; A wildcard alias serves every subdomain |
-| alias change on self (keeps HTTPS), on LE (reissue), LE alias failing validation | covered | alias: Changing aliases on a self-signed site keeps HTTPS; le: alias scenarios; known bug SSL-2 |
+| alias change on self (keeps HTTPS), on LE (reissue), LE alias failing validation (rolled back, SSL-2) | covered | alias: Changing aliases on a self-signed site keeps HTTPS; le: alias scenarios; An alias that fails validation is rejected... |
 | alias label validation (AUTH-1) | covered (regression; fixed by #502, merged 2026-09-25) | alias: Alias domains with a label starting with an underscore are rejected |
 | alias change on custom SSL (warning) | not covered | low value; same code path as self apart from the warning text |
 | `--ssl=self` on a plain site, twice, `--ssl=off`, off on plain | covered | ussl: first four scenarios |
@@ -153,7 +153,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | `--php` real version switch (config backup/restore, sendmail path for 5.6) | not covered | php/wp sites only (site-type-php/wp suites) |
 | `--proxy-cache=on/off`, twice, custom sizes, invalid sizes | covered (@destructive) | pcache: all but the invalid switch |
 | invalid `--proxy-cache` value | covered (@destructive, known bug SC-18) | pcache: An invalid proxy cache switch is rejected |
-| proxy cache for aliases (existing and newly added) | covered (@destructive) | pcache: Alias domains get proxy cache locations... |
+| proxy cache for aliases (existing, newly added, deleted), failed alias sync leaves a loadable config (PRX-6) | covered (@destructive) | pcache: Alias domains get proxy cache locations...; Deleting an alias removes its proxy cache location; A failed proxy cache alias sync leaves a config nginx can load |
 | proxy cache `subdom` location (`*.site_location`) | not covered | WP subdom only (site-type-wp suite) |
 
 ### SSL commands
@@ -226,7 +226,7 @@ Verified against develop 9dc44e1 in review; details, severity and locations are 
 |---|---|---|---|
 | SC-1 | `ltrim($site, 'www.')` strips characters, not the prefix | redirect: A www site whose next label starts with w... | none |
 | SC-2 | `get_parent_of_alias()` uses `LIKE '%alias%'` | create: The owner of an alias is reported correctly... | none |
-| SC-3 | SSL can't be turned off on a `--ssl=self` site; update stores `site_ssl_wildcard=0`, create 1 | ussl: two scenarios | none |
+| SC-3 | SSL can't be turned off on a `--ssl=self` site (fixed on `fix/proxy-cache-rollback-and-le-alias`, now a regular scenario); update stores `site_ssl_wildcard=0`, create 1 (still `@known-bug`) | ussl: two scenarios | none |
 | SC-4 | `update --ssl=inherit` skips the parent check | ussl: Inheriting SSL through update requires a wildcard parent | none |
 | SC-5 | inherit error message built with `var_dump()` | ssl: A failed inherit does not dump the parent site object | none |
 | SC-6 | `site reload` exits 0 when `nginx -t` fails | rr: Reload fails when the nginx config test fails | none |
@@ -251,6 +251,6 @@ Verified against develop 9dc44e1 in review; details, severity and locations are 
 | backup: Restoring a WordPress site does not print its database password | LOG-3 | #484 (success path only) |
 | backup: A restored WordPress core passes checksum verification | WP-1 | none (local fix only) |
 | create: Site names that are not valid hostnames are rejected... | SEC-1 | #495 is partial (self-signed sinks only); full fix local |
-| le: SSL-2, SSL-8, SSL-5/SSL-9; ssl: SEC-3, SSL-4; clean: CACHE-1 pattern; redirect: MIG-15 | as named | none (#486/#487/#493/#495/#498/#502 only touch these paths) |
+| le: SSL-8; ssl: SEC-3, SSL-4; clean: CACHE-1 pattern; redirect: MIG-15 | as named | none (#486/#487/#493/#495/#498/#502 only touch these paths) |
 
 PRs that change what passing scenarios assert, to revisit when they merge: #480 keeps `<site>.lock` after a successful backup/restore (drop the two "lock should not exist" lines in backup), #482 adds a `--list` "No remote backups found." line and new disk-space errors, #484/#483 add new restore/backup abort messages, #486 changes the SSL-2 warning text, #487 makes `ssl-verify` fail for non-LE sites, #501 changes the clone messages on an empty destination host ("Unable to find '<site>' on '<host>'"). #502 merged on 2026-09-25: AUTH-1 is a regular scenario since, and "Delete an alias domain" waits for the remaining alias to answer 200 (the recreated nginx container briefly drops all of the site's domains from the proxy; https://github.com/mrrobot47/site-command/actions/runs/36099145415).
