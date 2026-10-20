@@ -435,8 +435,8 @@ class FeatureContext implements Context
 	 *
 	 * Written to be copied as-is into other packages' contexts: only SITE_PREFIX changes.
 	 * Every string argument goes through v(), so {NAME} variables work everywhere:
-	 * built-ins are {EE}, {EE_ROOT_DIR}, {SITES_DIR}, {PROXY_DIR}, {BACKUP_DIR}, {TMP}, {RUN_ID}, {PUBLIC_IP}
-	 * and {RCLONE_PATH}; others come from the "I save ..." steps.
+	 * built-ins are {EE}, {EE_ROOT_DIR}, {SITES_DIR}, {PROXY_DIR}, {BACKUP_DIR}, {TMP}, {RUN_ID}, {PUBLIC_IP},
+	 * {RCLONE_PATH} and {LE_ISSUER}; others come from the "I save ..." steps.
 	 * ===================================================================== */
 
 	/**
@@ -1342,6 +1342,9 @@ class FeatureContext implements Context
 				return $this->public_ip();
 			case 'RCLONE_PATH':
 				return $this->rclone_path();
+			case 'LE_ISSUER':
+				// CI runs @le against Pebble, whose intermediate CN is random per start.
+				return getenv( 'EE_BEHAT_LE_ISSUER' ) ?: "Let's Encrypt";
 		}
 
 		return null;

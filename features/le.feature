@@ -26,7 +26,7 @@ Feature: Let's Encrypt certificates
     And the response body should contain "Your html site with EasyEngine"
     And the TLS certificate served for "{LE1}" should cover "{LE1}"
     And the TLS certificate served for "{LE1}" should cover "www.{LE1}"
-    And the TLS certificate served for "{LE1}" should be issued by "Let's Encrypt"
+    And the TLS certificate served for "{LE1}" should be issued by "{LE_ISSUER}"
     When I send a GET request to "http://{LE1}/"
     Then the response code should be 301
     And the response header "Location" should be "https://{LE1}/"
@@ -35,7 +35,7 @@ Feature: Let's Encrypt certificates
     And the response header "Location" should be "https://{LE1}/"
     When I run 'bin/ee site ssl-info {LE1}'
     Then the JSON field "0.ssl_type" in STDOUT should be "le"
-    And the JSON field "0.issued_by_CN" in STDOUT should be "Let's Encrypt"
+    And the JSON field "0.issued_by_CN" in STDOUT should be "{LE_ISSUER}"
     And the JSON field "0.SANs" in STDOUT should contain "www.{LE1}"
 
   Scenario: ssl-renew leaves a certificate that is not due alone
@@ -104,7 +104,7 @@ Feature: Let's Encrypt certificates
     When I wait up to 60 seconds for "https://{LE2}/" to return 200
     And I send a verified GET request to "https://{LE2}/"
     Then the response code should be 200
-    And the TLS certificate served for "{LE2}" should be issued by "Let's Encrypt"
+    And the TLS certificate served for "{LE2}" should be issued by "{LE_ISSUER}"
 
   # SSL-2: an alias that fails validation only warns; the alias is saved and SSL is marked disabled while the old cert keeps serving.
   # The alias is under the reserved .invalid TLD: the order is refused outright, so nothing outside *.ee4-test.rt.gw is validated.
