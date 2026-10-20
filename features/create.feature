@@ -31,6 +31,19 @@ Feature: Create html sites
     Then the response code should be 200
     And the response body should contain "Your html site with EasyEngine"
 
+  # PHPT-4: volume names drop "." and "-" and the compose project drops ".", so both names map to the volumes
+  # bhsitecommand160xtest_* and the compose project bh-site-command-160xtest. The second create is refused.
+  Scenario: A site whose docker volumes and compose project collide with an existing site is refused
+    Given the html site "bh-site-command-160.x.test" exists
+    When I run 'bin/ee site create bh-site-command-160x.test --type=html'
+    Then the command should fail
+    And STDERR should contain "Site bh-site-command-160x.test would share docker volumes (bhsitecommand160xtest_*) with the existing site bh-site-command-160.x.test."
+    And the site "bh-site-command-160x.test" should not exist
+    And the site "bh-site-command-160.x.test" should have 3 docker volumes
+    And the service "nginx" of site "bh-site-command-160.x.test" should be running
+    When I send a GET request to "http://bh-site-command-160.x.test/"
+    Then the response code should be 200
+
   Scenario: The old site assertions still work on a created site
     Given the html site "bh-site-command-10.test" exists
     Then The site 'bh-site-command-10.test' should have webroot

@@ -71,6 +71,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 |---|---|---|
 | `<site-name>` happy path: files, .env, main.conf, user.conf, index.html, compose file, nginx container, 3 labelled volumes, network, hosts entry, DB row, HTTP 200 | covered | create: Create an html site; labels: both scenarios |
 | Duplicate site | covered | create: Creating a site that already exists fails and keeps the site |
+| Docker volume / compose project collision with another site (PHPT-4) | covered | create: A site whose docker volumes and compose project collide with an existing site is refused (needs the `fix/site-name-collisions` branch of site-command, 2026-09-26, local) |
 | `--public-dir` | covered | create: Create a site with a custom public directory |
 | `--skip-status-check` | covered | create: Create a site without the status check |
 | `--alias-domains` (DB, server_name, VIRTUAL_HOST, HTTP on alias) | covered | create: Create a site with alias domains |
