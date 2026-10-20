@@ -1,12 +1,12 @@
 # site-command Behat coverage
 
-Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 187 scenarios (220 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
+Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 188 scenarios (221 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
 
 ## Tags
 
 | Tag | Scenarios | Meaning |
 |---|---|---|
-| (none of the tags below) | 127 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
+| (none of the tags below) | 128 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
 | `@known-bug` | 25 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
 | `@destructive` | 14 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
 | `@remote` | 15 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |

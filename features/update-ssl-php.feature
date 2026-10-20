@@ -71,6 +71,17 @@ Feature: Update SSL and PHP of html sites
     When I wait up to 60 seconds for "https://sub.bh-site-command-76.test/" to return 200
     Then the TLS certificate served for "sub.bh-site-command-76.test" should cover "sub.bh-site-command-76.test"
 
+  # --ssl=off on the parent would remove the certificate that the child's www redirect loads, and nginx could not load its config.
+  Scenario: SSL can't be turned off on a parent whose certificate is inherited
+    Given the site "bh-site-command-76.test" exists, created with "--type=html --ssl=self"
+    And the html site "sub.bh-site-command-76.test" exists
+    When I run 'bin/ee site update sub.bh-site-command-76.test --ssl=inherit'
+    And I run 'bin/ee site update bh-site-command-76.test --ssl=off'
+    Then the command should fail
+    And STDERR should contain "Cannot disable SSL on bh-site-command-76.test: sub.bh-site-command-76.test inherit its certificate."
+    And the "site_ssl" field of site "bh-site-command-76.test" in the database should be "self"
+    And the file "{PROXY_DIR}/certs/bh-site-command-76.test.crt" should exist
+
   Scenario: Changing the PHP version of an html site fails and leaves it serving
     Given the html site "bh-site-command-77.test" exists
     When I run 'bin/ee site update bh-site-command-77.test --php=8.3'
