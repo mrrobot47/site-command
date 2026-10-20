@@ -804,6 +804,8 @@ class FeatureContext implements Context
 	 */
 	public function thePathShouldExist( $type, $path, $not = '' )
 	{
+		// PHP 7.4 serves is_file() of the last path it stat'ed from its stat cache, even after ee deleted it.
+		clearstatcache();
 		$path   = $this->v( $path );
 		$exists = 'file' === $type ? is_file( $path ) : ( 'directory' === $type ? is_dir( $path ) : is_link( $path ) );
 		if ( $exists === (bool) $not ) {
