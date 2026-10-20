@@ -31,7 +31,7 @@ Feature: Create html sites
     Then the response code should be 200
     And the response body should contain "Your html site with EasyEngine"
 
-  # PHPT-4: volume names drop "." and "-" and the compose project drops ".", so both names map to the volumes
+  # EasyEngine/site-command#503: volume names drop "." and "-" and the compose project drops ".", so both names map to the volumes
   # bhsitecommand160xtest_* and the compose project bh-site-command-160xtest. The second create is refused.
   Scenario: A site whose docker volumes and compose project collide with an existing site is refused
     Given the html site "bh-site-command-160.x.test" exists
@@ -137,7 +137,7 @@ Feature: Create html sites
     Then the command should succeed
     And the "site_type" field of site "bh-site-command-18.test" in the database should be "html"
 
-  # SEC-1 (fixed in v4.13.2, site-command#509), regression check: site names are not validated, and unescaped shell sinks run before the create fails: the ";" splits
+  # Regression check (fixed in v4.13.2, EasyEngine/site-command#509): site names are not validated, and unescaped shell sinks run before the create fails: the ";" splits
   # `docker volume create ... bhsitecommand22;idtest_htdocs`, creating a volume "bhsitecommand22" and running "idtest_htdocs".
   Scenario: Site names that are not valid hostnames are rejected before anything runs
     Given the site "bh-site-command-22;id.test" does not exist

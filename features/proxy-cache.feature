@@ -82,7 +82,7 @@ Feature: Proxy cache
     And the file "{PROXY_DIR}/vhost.d/bh-site-command-162-b.test_location" should exist
     And the file "{PROXY_DIR}/vhost.d/bh-site-command-162.test_location" should exist
 
-  # PRX-6 (fixed on fix/proxy-cache-rollback-and-le-alias): a failed nginx -t during the alias sync used to remove the cache zone but keep the locations using it, so nginx never passed -t again and could not start after a restart.
+  # Regression check (fixed in v4.13.1, EasyEngine/site-command#505): a failed nginx -t during the alias sync used to remove the cache zone but keep the locations using it, so nginx never passed -t again and could not start after a restart.
   # The broken include is removed right after the update, before any assertion can fail.
   Scenario: A failed proxy cache alias sync leaves a config nginx can load
     Given the site "bh-site-command-163.test" exists, created with "--type=html --alias-domains=bh-site-command-163-a.test"

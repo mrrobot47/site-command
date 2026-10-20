@@ -108,7 +108,7 @@ Feature: Let's Encrypt certificates
     Then the response code should be 200
     And the TLS certificate served for "{LE2}" should be issued by "{LE_ISSUER}"
 
-  # SSL-2 (fixed on fix/proxy-cache-rollback-and-le-alias): a failed issuance used to only warn, save the alias with SSL "Not Enabled" and revoke the served cert.
+  # Regression check (fixed in v4.13.1, EasyEngine/site-command#505): a failed issuance used to only warn, save the alias with SSL "Not Enabled" and revoke the served cert.
   # The alias is under the reserved .invalid TLD: the order is refused outright, so nothing outside *.ee4-test.rt.gw is validated.
   Scenario: An alias that fails validation is rejected and the site keeps its certificate
     Given the site "{LE2}" exists, created with "--type=html --ssl=le"
@@ -127,7 +127,7 @@ Feature: Let's Encrypt certificates
     Then the command should succeed
     And STDERR should not contain "Only Letsencrypt certificate renewal is supported."
 
-  # WPT-12: turning SSL off removes the certificate and ACME state (no issuance: runs on the site of the scenario above).
+  # Turning SSL off removes the certificate and ACME state (no issuance: runs on the site of the scenario above).
   Scenario: Turning Let's Encrypt off removes the certificate
     Given the site "{LE2}" exists, created with "--type=html --ssl=le"
     When I run 'bin/ee site update {LE2} --ssl=off'
@@ -149,7 +149,7 @@ Feature: Let's Encrypt certificates
     And the directory "{PROXY_DIR}/acme-conf/certs/{LE1}" should not exist
     And the directory "{PROXY_DIR}/acme-conf/var/{LE1}" should not exist
 
-  # SSL-5 / SSL-9 (fixed on fix/proxy-cache-rollback-and-le-alias): delete used to leave acme-conf/var/www.<site> and alias dirs behind. Run after the delete scenario above.
+  # Regression check (fixed in v4.13.1, EasyEngine/site-command#505): delete used to leave acme-conf/var/www.<site> and alias dirs behind. Run after the delete scenario above.
   Scenario: Deleting a Let's Encrypt site leaves no ACME state behind
     Given the site "{LE1}" does not exist
     Then the directory "{PROXY_DIR}/acme-conf/var/www.{LE1}" should not exist

@@ -88,7 +88,7 @@ Feature: Update alias domains
     When I wait up to 60 seconds for "https://bh-site-command-69.test/" to return 200
     Then the TLS certificate served for "bh-site-command-69.test" should cover "bh-site-command-69.test" within 30 seconds
 
-  # AUTH-1 regression: alias labels starting with "_" could clobber a site's _wildcard proxy files (fixed by #502, 38569df).
+  # Regression check (fixed by EasyEngine/site-command#502): alias labels starting with "_" could clobber a site's _wildcard proxy files.
   Scenario: Alias domains with a label starting with an underscore are rejected
     Given the html site "bh-site-command-68.test" exists
     When I run 'bin/ee site update bh-site-command-68.test --add-alias-domains=_wildcard.bh-site-command-68.test'

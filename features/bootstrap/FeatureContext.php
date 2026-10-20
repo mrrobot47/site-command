@@ -218,7 +218,7 @@ class FeatureContext implements Context
 	}
 
 	/**
-	 * Backup ids have one-second resolution (BKP-5): back-to-back backups need a second boundary between them.
+	 * Backup ids have one-second resolution: back-to-back backups need a second boundary between them.
 	 *
 	 * @When I wait for the next second
 	 */
@@ -549,7 +549,7 @@ class FeatureContext implements Context
 	/* ----- command execution and output ----- */
 
 	/**
-	 * Runs a command, killing it after the given time (for commands with known hangs, e.g. CACHE-1).
+	 * Runs a command, killing it after the given time (for commands that could hang, e.g. the proxy cache purge without a terminal).
 	 *
 	 * @When /^I run (['"])(.*)\1 with a timeout of (\d+) seconds$/
 	 */
@@ -1223,7 +1223,7 @@ class FeatureContext implements Context
 	}
 
 	/**
-	 * The proxy can serve its default certificate for a moment while it regenerates after an alias change (PRX-7).
+	 * The proxy can serve its default certificate for a moment while it regenerates after an alias change.
 	 *
 	 * @Then /^the TLS certificate served for "([^"]*)" should cover "([^"]*)" within (\d+) seconds$/
 	 */
@@ -1352,7 +1352,7 @@ class FeatureContext implements Context
 	}
 
 	/**
-	 * Simulates a restore that died after downloading (BKP-1).
+	 * Simulates a restore that died after downloading.
 	 *
 	 * @When /^I download the remote backup "([^"]*)" of site "([^"]*)" into the local backup directory$/
 	 */
@@ -1622,7 +1622,7 @@ class FeatureContext implements Context
 	}
 
 	/**
-	 * Backup ids of a site: <rclone-path>/<site>/<id> (develop) and <rclone-path>/<site>/<host-id>/<id> (per-host layout, BKP-8).
+	 * Backup ids of a site: <rclone-path>/<site>/<id> (develop) and <rclone-path>/<site>/<host-id>/<id> (per-host layout).
 	 */
 	private function remote_backups( $site )
 	{
@@ -1712,7 +1712,7 @@ class FeatureContext implements Context
 
 	/**
 	 * Removes proxy certs/ACME state, site dirs and volumes named after this suite once none of its sites is left
-	 * (known bugs such as SSL-2/SSL-5/SSL-9 or a failed create leave them behind), so runs do not pile up state.
+	 * (known bugs or a failed create can leave them behind), so runs do not pile up state.
 	 */
 	private static function purge_own_leftovers()
 	{

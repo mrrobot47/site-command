@@ -97,8 +97,8 @@ Feature: Update SSL and PHP of html sites
     Then the command should fail
     And STDERR should contain "Invalid value specified for 'php'"
 
-  # SC-3 (fixed on fix/proxy-cache-rollback-and-le-alias): --ssl=off was refused for sites stored with site_ssl_wildcard=1, which create --ssl=self sets.
-  # WPT-12: --ssl=off also removes the certificate (the www redirect's HTTPS block is only written when www resolves, so it isn't checked here).
+  # Regression check (fixed in v4.13.1, EasyEngine/site-command#505): --ssl=off was refused for sites stored with site_ssl_wildcard=1, which create --ssl=self sets.
+  # --ssl=off also removes the certificate (the www redirect's HTTPS block is only written when www resolves, so it isn't checked here).
   Scenario: SSL can be disabled on a site created with self-signed SSL
     Given the site "bh-site-command-71.test" exists, created with "--type=html --ssl=self"
     When I run 'bin/ee site update bh-site-command-71.test --ssl=off'
@@ -111,14 +111,14 @@ Feature: Update SSL and PHP of html sites
     Then the command should succeed
     When I wait up to 60 seconds for "http://bh-site-command-71.test/" to return 200
 
-  # SC-3 (fixed in v4.13.1, site-command#505), regression check: create --ssl=self stores site_ssl_wildcard=1, update --ssl=self saves 0 (init_ssl() only changes the array copy).
+  # Regression check (fixed in v4.13.1, EasyEngine/site-command#505): create --ssl=self stores site_ssl_wildcard=1, update --ssl=self saves 0 (init_ssl() only changes the array copy).
   Scenario: Enabling self-signed SSL through update records it as wildcard like create does
     Given the html site "bh-site-command-75.test" exists
     When I run 'bin/ee site update bh-site-command-75.test --ssl=self'
     Then the command should succeed
     And the "site_ssl_wildcard" field of site "bh-site-command-75.test" in the database should be "1"
 
-  # SC-15 (fixed in v4.13.1, site-command#489), regression check: update has no --ssl-key/--ssl-crt, so --ssl=custom can only be set at create time.
+  # Regression check (fixed in v4.13.1, EasyEngine/site-command#489): update has no --ssl-key/--ssl-crt, so --ssl=custom can only be set at create time.
   Scenario: Enable custom SSL on an existing site
     Given the html site "bh-site-command-108.test" exists
     When I run "openssl req -x509 -newkey rsa:2048 -nodes -days 30 -keyout {TMP}/bh.key -out {TMP}/bh.crt -subj '/CN=bh-site-command-108.test/O=bh-site-command-custom' -addext 'subjectAltName=DNS:bh-site-command-108.test'"
