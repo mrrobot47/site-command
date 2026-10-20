@@ -152,7 +152,7 @@ Feature: Self-signed, custom and inherited SSL
     And STDERR should contain "Cannot use --wildcard with --ssl=inherit"
     And the site "sub2.bh-site-command-105.test" should not exist
 
-  # Suspected new bug: check_parent_site_certs() builds its exception message with var_dump(), which prints the parent site object to STDOUT.
+  # SC-5: check_parent_site_certs() builds its exception message with var_dump(), which prints the parent site object to STDOUT. No open PR.
   @known-bug
   Scenario: A failed inherit does not dump the parent site object
     Given the html site "bh-site-command-107.test" exists

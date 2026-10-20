@@ -59,7 +59,7 @@ Feature: Site Redirection
     Then the response code should be 301
     And the response header "Location" should be "https://bh-site-command-126.test/"
 
-  # Suspected new bug: add_site_redirects()/check_www_or_non_www_domain()/get_cert_domains() use ltrim($site, 'www.'), which strips characters, not the prefix: www.w.x.test becomes x.test.
+  # SC-1: add_site_redirects()/check_www_or_non_www_domain()/get_cert_domains() use ltrim($site, 'www.'), which strips characters, not the prefix: www.w.x.test becomes x.test. No open PR.
   @known-bug
   Scenario: A www site whose next label starts with w redirects the right name
     Given the hosts file contains an entry for "w.bh-site-command-125.test"

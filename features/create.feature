@@ -124,7 +124,7 @@ Feature: Create html sites
     Then the command should succeed
     And the "site_type" field of site "bh-site-command-18.test" in the database should be "html"
 
-  # Suspected new bug: get_parent_of_alias() finds the parent with LIKE '%alias%', so a longer alias of another site (ab.X contains b.X) is reported as the owner.
+  # SC-2: get_parent_of_alias() finds the parent with LIKE '%alias%', so a longer alias of another site (ab.X contains b.X) is reported as the owner. No open PR.
   @known-bug
   Scenario: The owner of an alias is reported correctly when another alias contains it
     Given the site "bh-site-command-20.test" exists, created with "--type=html --alias-domains=ab.bh-site-command-20.test"
@@ -133,7 +133,9 @@ Feature: Create html sites
     Then the command should fail
     And STDERR should contain "already exists as an alias domain for site: bh-site-command-21.test."
 
-  # SEC-1: site names are not validated, and unescaped shell sinks run before the create fails.
+  # SEC-1: site names are not validated, and unescaped shell sinks run before the create fails: the ";" splits
+  # `docker volume create ... bhsitecommand22;idtest_htdocs`, creating a volume "bhsitecommand22" and running "idtest_htdocs".
+  # PR #495 only escapes the self-signed sinks; the real fix is local (issues.md SEC-1).
   @known-bug
   Scenario: Site names that are not valid hostnames are rejected before anything runs
     Given the site "bh-site-command-22;id.test" does not exist
@@ -141,4 +143,6 @@ Feature: Create html sites
     Then the command should fail
     And STDERR should contain "Invalid site name"
     And the site "bh-site-command-22;id.test" should not exist
+    And the directory "{SITES_DIR}/bh-site-command-22;id.test" should not exist
+    And the site "bh-site-command-22;id.test" should have 0 docker volumes
     And the docker volume "bhsitecommand22" should not exist

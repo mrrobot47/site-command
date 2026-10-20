@@ -57,14 +57,13 @@ Feature: Restart and reload site services
     When I write "location = /bh-probe { return 200 'bh-site-command-probe'; }\n" to the file "{SITES_DIR}/bh-site-command-58.test/config/nginx/custom/user.conf"
     And I run 'bin/ee site reload bh-site-command-58.test'
     Then the command should succeed
-    When I send a GET request to "http://bh-site-command-58.test/bh-probe"
-    Then the response code should be 200
-    And the response body should contain "bh-site-command-probe"
+    When I wait up to 30 seconds for "http://bh-site-command-58.test/bh-probe" to return 200
+    Then the response body should contain "bh-site-command-probe"
     When I write "# Custom Nginx configuration can be put here\n" to the file "{SITES_DIR}/bh-site-command-58.test/config/nginx/custom/user.conf"
     And I run 'bin/ee site reload bh-site-command-58.test'
     Then the command should succeed
 
-  # Suspected new bug: reload_services() ignores the exit code of `nginx -t && nginx -s reload`, so a failed reload exits 0.
+  # SC-6: reload_services() ignores the exit code of `nginx -t && nginx -s reload`, so a failed reload exits 0. No open PR.
   @known-bug
   Scenario: Reload fails when the nginx config test fails
     Given the html site "bh-site-command-57.test" exists

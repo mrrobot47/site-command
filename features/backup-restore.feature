@@ -16,6 +16,7 @@ Feature: Backup and restore
     And STDOUT should contain "Backup created successfully."
     And the remote backup storage should have 1 backup for site "bh-site-command-140.test"
     And the directory "{BACKUP_DIR}/bh-site-command-140.test" should not exist
+    # PR #480 keeps the lock file (it becomes an flock); drop this line when it merges.
     And the file "{BACKUP_DIR}/bh-site-command-140.test.lock" should not exist
     When I run 'bin/ee site backup bh-site-command-140.test --list'
     Then the command should succeed
@@ -38,6 +39,7 @@ Feature: Backup and restore
     And STDOUT should contain "Site restored successfully."
     And the file "{SITES_DIR}/bh-site-command-141.test/app/htdocs/bh-marker.txt" should contain "original"
     And the file "{SITES_DIR}/bh-site-command-141.test/app/htdocs/index.html" should exist
+    # PR #480 keeps the lock file (it becomes an flock); drop this line when it merges.
     And the file "{BACKUP_DIR}/bh-site-command-141.test.lock" should not exist
     When I wait up to 60 seconds for "http://bh-site-command-141.test/bh-marker.txt" to return 200
     Then the response body should contain "original"
@@ -77,7 +79,7 @@ Feature: Backup and restore
     Then the command should succeed
     And STDOUT should match "/^\d+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/m"
 
-  # Suspected new bug: list_remote_backups() checks empty() on explode()'s [''] before filtering, so "No remote backups found." is never printed (and rclone may error on the missing path instead).
+  # SC-11: list_remote_backups() checks empty() on explode()'s [''] before filtering, so "No remote backups found." is never printed. Fixed by PR #482.
   @known-bug
   Scenario: Listing the backups of a site without backups says so
     Given the html site "bh-site-command-149.test" exists
@@ -99,23 +101,27 @@ Feature: Backup and restore
     Then the command should fail
     And STDERR should contain "ed-api-url is not configured."
 
+  # The lock file is also held with flock(1): develop only checks that the file exists, PR #480 only honours a held flock.
   Scenario: A lock file of another backup blocks the backup
     Given the html site "bh-site-command-144.test" exists
     And I write "lock" to the file "{BACKUP_DIR}/bh-site-command-144.test.lock"
-    When I run 'bin/ee site backup bh-site-command-144.test'
+    When I run 'flock {BACKUP_DIR}/bh-site-command-144.test.lock bin/ee site backup bh-site-command-144.test'
     Then the command should fail
     And STDERR should contain "Another backup/restore process is running. Please wait for it to complete."
 
-  # Suspected new bug: pre_backup_restore_checks() writes <site>.lock, but a failing restore exits without removing it (the shutdown handler only sees the site command's own site_data), so every later backup/restore of the site is refused.
+  # SC-9: pre_backup_restore_checks() writes <site>.lock, but a failing restore exits without removing it (the shutdown handler only sees the site command's own site_data), so every later backup/restore of the site is refused.
+  # Asserted through the next backup, not the file: PR #480 (flock) fixes the blocking but keeps the file.
   @known-bug
-  Scenario: A failed restore releases its lock
+  Scenario: A failed restore does not block later backups
     Given the html site "bh-site-command-145.test" exists
     And there are no remote backups for site "bh-site-command-145.test"
     When I run 'bin/ee site restore bh-site-command-145.test'
     Then the command should fail
-    And the file "{BACKUP_DIR}/bh-site-command-145.test.lock" should not exist
+    When I run 'bin/ee site backup bh-site-command-145.test'
+    Then the command should succeed
+    And STDERR should not contain "Another backup/restore process is running."
 
-  # BKP-1: a restore reuses files a previous restore left in the backup directory, even for another --id (fixed in site-command #482, not merged).
+  # BKP-1: a restore reuses files a previous restore left in the backup directory, even for another --id. Fixed by PR #482 (f372636).
   @known-bug
   Scenario: Restoring by id ignores files left behind by an earlier restore
     Given the html site "bh-site-command-146.test" exists
@@ -133,7 +139,7 @@ Feature: Backup and restore
     Then the command should succeed
     And the file "{SITES_DIR}/bh-site-command-146.test/app/htdocs/bh-marker.txt" should contain "A"
 
-  # Suspected new bug: cleanup_old_backups() only prunes when count > no-of-backups + 1, so one backup too many is kept.
+  # SC-10: cleanup_old_backups() only prunes when count > no-of-backups + 1, so one backup too many is kept. Fixed by PR #482.
   @known-bug
   Scenario: Old backups are pruned down to no-of-backups
     Given the EasyEngine config value "no-of-backups" is "3"
@@ -167,7 +173,7 @@ Feature: Backup and restore
     Then STDOUT should contain "bh-site-command-before"
     When I wait up to 60 seconds for "http://bh-site-command-148.test/" to return 200
 
-  # LOG-3: restoring a WP site prints its DB password (wp config set output).
+  # LOG-3: restoring a WP site prints its DB password (wp config set output). PR #484 fixes the success path only.
   @wp @known-bug
   Scenario: Restoring a WordPress site does not print its database password
     Given "ee" is installed
@@ -181,7 +187,7 @@ Feature: Backup and restore
     And STDOUT should not contain "{DB_PASSWORD}"
     And STDERR should not contain "{DB_PASSWORD}"
 
-  # WP-1: `wp core download` (used by restore) writes a corrupted WordPress 7.x tree with WP-CLI 2.12.
+  # WP-1: `wp core download` (used by restore) writes a corrupted WordPress 7.x tree with WP-CLI 2.12. No PR yet (local fix only).
   @wp @known-bug
   Scenario: A restored WordPress core passes checksum verification
     Given "ee" is installed

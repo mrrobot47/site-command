@@ -88,7 +88,7 @@ Feature: Update alias domains
     When I wait up to 60 seconds for "https://bh-site-command-69.test/" to return 200
     Then the TLS certificate served for "bh-site-command-69.test" should cover "bh-site-command-69.test"
 
-  # AUTH-1: alias labels starting with "_" are accepted and can clobber a site's _wildcard proxy files (fixed in site-command #502, not merged).
+  # AUTH-1: alias labels starting with "_" are accepted and can clobber a site's _wildcard proxy files. Fixed by PR #502 (38569df, draft).
   @known-bug
   Scenario: Alias domains with a label starting with an underscore are rejected
     Given the html site "bh-site-command-68.test" exists

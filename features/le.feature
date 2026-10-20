@@ -85,9 +85,11 @@ Feature: Let's Encrypt certificates
     Then the command should succeed
     And the JSON field "0.dns_challenges" in STDOUT should contain "_acme-challenge.{LE3}"
 
+  # --all walks every LE site on the host (and force-enables expired ones), so it only runs when all of them are ours.
   @destructive
   Scenario: ssl-renew --all skips wildcard sites without Cloudflare credentials
     Given the EasyEngine config value "cloudflare-api-key" is not set
+    And no enabled Let's Encrypt site other than this suite's exists
     And the site "{LE3}" exists, created with "--type=html --ssl=le --wildcard"
     When I run 'bin/ee site ssl-renew --all'
     Then the command should succeed
@@ -105,10 +107,11 @@ Feature: Let's Encrypt certificates
     And the TLS certificate served for "{LE2}" should be issued by "Let's Encrypt"
 
   # SSL-2: an alias that fails validation only warns; the alias is saved and SSL is marked disabled while the old cert keeps serving.
+  # The alias is under the reserved .invalid TLD: the order is refused outright, so nothing outside *.ee4-test.rt.gw is validated.
   @known-bug
   Scenario: An alias that fails validation is rejected and the site keeps its certificate
     Given the site "{LE2}" exists, created with "--type=html --ssl=le"
-    When I run 'bin/ee site update {LE2} --add-alias-domains=bh-site-command-nx.rt.gw'
+    When I run 'bin/ee site update {LE2} --add-alias-domains=bh-site-command-nx-{RUN_ID}.invalid'
     Then the command should fail
     And the "alias_domains" field of site "{LE2}" in the database should be "{LE2}"
     And the "site_ssl" field of site "{LE2}" in the database should be "le"

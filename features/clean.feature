@@ -27,7 +27,7 @@ Feature: Clean site caches
     Then the command should fail
     And STDERR should contain "Proxy cache is not enabled on site."
 
-  # CACHE-1 pattern: the proxy purge uses `docker exec -it` and ignores the exit code (no TTY: fails silently; nested ptys: can hang), hence the timeout.
+  # CACHE-1 pattern (see SC-7): the proxy purge uses `docker exec -it` and ignores the exit code (no TTY: fails silently; nested ptys: can hang), hence the timeout. No open PR.
   @destructive @known-bug
   Scenario: Cleaning the proxy cache empties it
     Given the html site "bh-site-command-89.test" exists
@@ -46,7 +46,7 @@ Feature: Clean site caches
       """
     And the docker container "services_global-nginx-proxy_1" should be running
 
-  # Suspected new bug: without flags, clean always tries object and page caches, which html sites cannot have, so it fails even after clearing the proxy cache.
+  # SC-7: without flags, clean always tries object and page caches, which html sites cannot have, so it fails even after clearing the proxy cache. No open PR.
   @destructive @known-bug
   Scenario: Cleaning without flags on a proxy-cached html site succeeds
     Given the html site "bh-site-command-89.test" exists

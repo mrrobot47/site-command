@@ -144,7 +144,7 @@ Feature: Site command basics
     Then the command should fail
     And STDERR should contain "Too many positional arguments"
 
-  # Suspected new bug: convert_old_args_to_new_args() checks $args[1] === 'create', but $args[1] is the site name, so the EE v3 flag message never shows.
+  # SC-8: convert_old_args_to_new_args() checks $args[1] === 'create', but $args[1] is the site name, so the EE v3 flag message never shows. No open PR.
   @known-bug
   Scenario: Removed EE v3 cache flags give a clear error
     Given the site "bh-site-command-3.test" does not exist
