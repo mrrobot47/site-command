@@ -203,3 +203,101 @@ Feature: Backup and restore
     Then the command should succeed
     When I run "bin/ee shell bh-site-command-148.test --skip-tty --command='wp core verify-checksums'"
     Then the command should succeed
+
+  # BKP-7: `no-of-backups: 0` (or a typo) made the prune delete every backup, the one just uploaded included.
+  @known-bug
+  Scenario: An invalid no-of-backups keeps the backups and warns
+    Given the html site "bh-site-command-150.test" exists
+    And there are no remote backups for site "bh-site-command-150.test"
+    When I run 'sed "/^no-of-backups:/d" {EE_ROOT_DIR}/config/config.yml > {TMP}/config.yml && echo "no-of-backups: 0" >> {TMP}/config.yml'
+    And I run 'EE_CONFIG_PATH={TMP}/config.yml bin/ee site backup bh-site-command-150.test'
+    Then the command should succeed
+    When I wait for the next second
+    And I run 'EE_CONFIG_PATH={TMP}/config.yml bin/ee site backup bh-site-command-150.test'
+    Then the command should succeed
+    And STDERR should contain "Invalid no-of-backups value"
+    And the remote backup storage should have 2 backups for site "bh-site-command-150.test"
+
+  # BKP-8: backups had no host identity, so hosts sharing rclone-path and a site name restored (and pruned) each other's.
+  @known-bug
+  Scenario: Hosts that share a remote keep their backups apart
+    Given the html site "bh-site-command-151.test" exists
+    And there are no remote backups for site "bh-site-command-151.test"
+    When I run 'sed "/^backup-host-id:/d" {EE_ROOT_DIR}/config/config.yml > {TMP}/a.yml && cp {TMP}/a.yml {TMP}/b.yml && echo "backup-host-id: bh-site-command-host-a" >> {TMP}/a.yml && echo "backup-host-id: bh-site-command-host-b" >> {TMP}/b.yml'
+    And I write "host-a" to the file "{SITES_DIR}/bh-site-command-151.test/app/htdocs/bh-marker.txt"
+    And I run 'EE_CONFIG_PATH={TMP}/a.yml bin/ee site backup bh-site-command-151.test'
+    Then the command should succeed
+    When I write "host-b" to the file "{SITES_DIR}/bh-site-command-151.test/app/htdocs/bh-marker.txt"
+    And I wait for the next second
+    And I run 'EE_CONFIG_PATH={TMP}/b.yml bin/ee site backup bh-site-command-151.test'
+    Then the command should succeed
+    When I run 'EE_CONFIG_PATH={TMP}/a.yml bin/ee site restore bh-site-command-151.test'
+    Then the command should succeed
+    And the file "{SITES_DIR}/bh-site-command-151.test/app/htdocs/bh-marker.txt" should contain "host-a"
+    When I run 'EE_CONFIG_PATH={TMP}/a.yml bin/ee site backup bh-site-command-151.test --list'
+    Then the command should succeed
+    And STDOUT should match "/^bh-site-command-host-b\/\d+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/m"
+
+  # BKP-12: without any backup the restore failed with "Failed to get remote backup size." (local remotes).
+  @known-bug
+  Scenario: Restoring a site without backups says so
+    Given the html site "bh-site-command-155.test" exists
+    And there are no remote backups for site "bh-site-command-155.test"
+    When I run 'bin/ee site restore bh-site-command-155.test'
+    Then the command should fail
+    And STDERR should contain "No backups found for bh-site-command-155.test."
+
+  # BKP-14: `rm -rf app/*` skipped dotfiles, so files that are not in the backup survived the restore.
+  @known-bug
+  Scenario: A restore removes files that are not in the backup, dotfiles too
+    Given the html site "bh-site-command-154.test" exists
+    And there are no remote backups for site "bh-site-command-154.test"
+    When I run 'bin/ee site backup bh-site-command-154.test'
+    Then the command should succeed
+    When I write "stale" to the file "{SITES_DIR}/bh-site-command-154.test/app/.bh-stale"
+    And I write "stale" to the file "{SITES_DIR}/bh-site-command-154.test/app/htdocs/.bh-stale"
+    And I run 'bin/ee site restore bh-site-command-154.test'
+    Then the command should succeed
+    And the file "{SITES_DIR}/bh-site-command-154.test/app/.bh-stale" should not exist
+    And the file "{SITES_DIR}/bh-site-command-154.test/app/htdocs/.bh-stale" should not exist
+    And the file "{SITES_DIR}/bh-site-command-154.test/app/htdocs/index.html" should exist
+
+  # BKP-9: a WordPress backup held only wp-config.php, wp-content and the DB; other webroot files were lost.
+  @wp @known-bug
+  Scenario: A WordPress backup holds the files next to WordPress
+    Given "ee" is installed
+    And the site "bh-site-command-152.test" exists, created with "--type=wp"
+    And there are no remote backups for site "bh-site-command-152.test"
+    And I write "User-agent: bh" to the file "{SITES_DIR}/bh-site-command-152.test/app/htdocs/robots.txt"
+    And I write "<?php echo 'bh-app';" to the file "{SITES_DIR}/bh-site-command-152.test/app/htdocs/bh-app/index.php"
+    And I write "BH=1" to the file "{SITES_DIR}/bh-site-command-152.test/app/.bh-env"
+    When I run 'bin/ee site backup bh-site-command-152.test'
+    Then the command should succeed
+    When I remove the file "{SITES_DIR}/bh-site-command-152.test/app/htdocs/robots.txt"
+    And I remove the directory "{SITES_DIR}/bh-site-command-152.test/app/htdocs/bh-app"
+    And I remove the file "{SITES_DIR}/bh-site-command-152.test/app/.bh-env"
+    And I run 'bin/ee site restore bh-site-command-152.test'
+    Then the command should succeed
+    And the file "{SITES_DIR}/bh-site-command-152.test/app/htdocs/robots.txt" should contain "User-agent: bh"
+    And the file "{SITES_DIR}/bh-site-command-152.test/app/htdocs/bh-app/index.php" should exist
+    And the file "{SITES_DIR}/bh-site-command-152.test/app/.bh-env" should exist
+    And the file "{SITES_DIR}/bh-site-command-152.test/app/htdocs/wp-includes/version.php" should exist
+    When I wait up to 60 seconds for "http://bh-site-command-152.test/bh-app/" to return 200
+    Then the response body should contain "bh-app"
+
+  # BKP-10: the restore recreated the archived wp-content/uploads symlink and moved the live one into it (uploads/uploads).
+  @wp @known-bug
+  Scenario: Symlinked uploads are backed up and restored without a loop
+    Given "ee" is installed
+    And the site "bh-site-command-153.test" exists, created with "--type=wp"
+    And there are no remote backups for site "bh-site-command-153.test"
+    When I run 'cd {SITES_DIR}/bh-site-command-153.test/app/htdocs && mkdir -p bh-shared/uploads && rm -rf wp-content/uploads && ln -s ../bh-shared/uploads wp-content/uploads && echo bh-upload > bh-shared/uploads/bh.txt && chown -R www-data:www-data bh-shared && chown -h www-data:www-data wp-content/uploads'
+    Then the command should succeed
+    When I run 'bin/ee site backup bh-site-command-153.test'
+    Then the command should succeed
+    When I remove the file "{SITES_DIR}/bh-site-command-153.test/app/htdocs/bh-shared/uploads/bh.txt"
+    And I run 'bin/ee site restore bh-site-command-153.test'
+    Then the command should succeed
+    And the symlink "{SITES_DIR}/bh-site-command-153.test/app/htdocs/wp-content/uploads" should exist
+    And the file "{SITES_DIR}/bh-site-command-153.test/app/htdocs/bh-shared/uploads/bh.txt" should contain "bh-upload"
+    And the symlink "{SITES_DIR}/bh-site-command-153.test/app/htdocs/bh-shared/uploads/uploads" should not exist

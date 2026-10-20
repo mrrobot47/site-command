@@ -1288,7 +1288,7 @@ class FeatureContext implements Context
 	public function theRemoteBackupShouldContainTheFile( $backup_id, $site, $file )
 	{
 		$site = $this->v( $site );
-		$run  = EE::launch( 'rclone lsf ' . escapeshellarg( $this->rclone_path() . '/' . $site . '/' . $this->v( $backup_id ) ), false, true );
+		$run  = EE::launch( 'rclone lsf ' . escapeshellarg( $this->remote_backup_path( $site, $this->v( $backup_id ) ) ), false, true );
 		if ( ! in_array( $this->v( $file ), explode( "\n", trim( $run->stdout ) ), true ) ) {
 			throw new Exception( "Remote backup does not contain $file.\n" . $this->describe( $run ) );
 		}
@@ -1303,7 +1303,7 @@ class FeatureContext implements Context
 	{
 		$site = $this->v( $site );
 		$this->assert_own_name( $site );
-		$run = EE::launch( sprintf( 'rclone copy %s %s', escapeshellarg( $this->rclone_path() . '/' . $site . '/' . $this->v( $backup_id ) ), escapeshellarg( EE_ROOT_DIR . '/.backup/' . $site ) ), false, true );
+		$run = EE::launch( sprintf( 'rclone copy %s %s', escapeshellarg( $this->remote_backup_path( $site, $this->v( $backup_id ) ) ), escapeshellarg( EE_ROOT_DIR . '/.backup/' . $site ) ), false, true );
 		if ( 0 !== $run->return_code ) {
 			throw new Exception( "rclone copy failed.\n" . $this->describe( $run ) );
 		}
@@ -1564,15 +1564,64 @@ class FeatureContext implements Context
 		return rtrim( (string) ( $this->config_value( 'rclone-path' ) ?: 'easyengine:easyengine' ), '/' );
 	}
 
+	/**
+	 * Backup ids of a site: <rclone-path>/<site>/<id> (develop) and <rclone-path>/<site>/<host-id>/<id> (per-host layout, BKP-8).
+	 */
 	private function remote_backups( $site )
 	{
-		$run = EE::launch( 'rclone lsf --dirs-only ' . escapeshellarg( $this->rclone_path() . '/' . $site ), false, true );
+		$ids = [];
+		foreach ( $this->remote_backup_paths( $site ) as $path ) {
+			$ids[] = basename( $path );
+		}
+
+		return $ids;
+	}
+
+	/**
+	 * @return string[] Remote path of each backup of $site.
+	 */
+	private function remote_backup_paths( $site )
+	{
+		$paths = [];
+		$root  = $this->rclone_path() . '/' . $site;
+		foreach ( self::list_remote_dirs( $root ) as $dir ) {
+			if ( self::is_backup_id( $dir ) ) {
+				$paths[] = "$root/$dir";
+				continue;
+			}
+			foreach ( self::list_remote_dirs( "$root/$dir" ) as $id ) {
+				if ( self::is_backup_id( $id ) ) {
+					$paths[] = "$root/$dir/$id";
+				}
+			}
+		}
+
+		return $paths;
+	}
+
+	private function remote_backup_path( $site, $backup_id )
+	{
+		foreach ( $this->remote_backup_paths( $site ) as $path ) {
+			if ( basename( $path ) === basename( $backup_id ) ) {
+				return $path;
+			}
+		}
+
+		return $this->rclone_path() . '/' . $site . '/' . $backup_id;
+	}
+
+	private static function list_remote_dirs( $path )
+	{
+		$run = EE::launch( 'rclone lsf --dirs-only ' . escapeshellarg( $path ), false, true );
 
 		return array_values( array_filter( array_map( function ( $line ) {
 			return rtrim( trim( $line ), '/' );
-		}, explode( "\n", $run->stdout ) ), function ( $line ) {
-			return 1 === preg_match( '/\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}/', $line );
-		} ) );
+		}, explode( "\n", $run->stdout ) ), 'strlen' ) );
+	}
+
+	private static function is_backup_id( $name )
+	{
+		return 1 === preg_match( '/^\d+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/', $name );
 	}
 
 	private static function purge_own_remote_backups()

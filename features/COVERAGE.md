@@ -198,6 +198,12 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | custom docker-compose files in backups | not covered | needs a custom compose setup |
 | disk-space checks, rclone/7z missing, apt-get auto-install (BKP-3), global backup lock wait | not covered | needs a full disk, uninstalled tools or a concurrent backup; BKP-3 needs a pending kernel upgrade |
 | BKP-2 partial SQL dump in webroot | not covered | needs a failing mysqldump (fault injection) |
+| invalid `no-of-backups` (BKP-7) | covered (known bug) | backup: An invalid no-of-backups keeps the backups and warns (config copy via `EE_CONFIG_PATH`) |
+| per-host remote layout, hosts sharing `rclone-path` (BKP-8) | covered (known bug) | backup: Hosts that share a remote keep their backups apart (two `backup-host-id` config copies) |
+| restore without any backup (BKP-12) | covered (known bug) | backup: Restoring a site without backups says so |
+| files and dotfiles not in the backup (BKP-14) | covered (known bug) | backup: A restore removes files that are not in the backup, dotfiles too |
+| WP webroot files beside WordPress (BKP-9), symlinked uploads (BKP-10) | covered (@wp, known bug) | backup: A WordPress backup holds the files next to WordPress; Symlinked uploads are backed up and restored without a loop |
+| restore rollback, disk-full extraction (BKP-6) | not covered | needs fault injection or a small filesystem; isolated harness `/var/tmp/fix-backup-test/harness` |
 
 ### clone / sync
 
