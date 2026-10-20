@@ -1825,9 +1825,6 @@ class FeatureContext implements Context
 	{
 		$parsed = openssl_x509_parse( $cert );
 		$names  = [];
-		if ( ! empty( $parsed['subject']['CN'] ) ) {
-			$names[] = $parsed['subject']['CN'];
-		}
 		if ( ! empty( $parsed['extensions']['subjectAltName'] ) ) {
 			foreach ( explode( ',', $parsed['extensions']['subjectAltName'] ) as $san ) {
 				$san = trim( $san );
@@ -1835,6 +1832,10 @@ class FeatureContext implements Context
 					$names[] = substr( $san, 4 );
 				}
 			}
+		}
+		// Clients ignore the Common Name when DNS SANs are present (RFC 6125).
+		if ( ! $names && ! empty( $parsed['subject']['CN'] ) ) {
+			$names[] = $parsed['subject']['CN'];
 		}
 
 		return array_values( array_unique( $names ) );
