@@ -140,7 +140,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | alias that is a site / alias of another site | covered | alias: Another site cannot be added...; An alias of another site cannot be added |
 | add + delete in one call, wildcard alias | covered | alias: Add and delete aliases in one call; A wildcard alias serves every subdomain |
 | alias change on self (keeps HTTPS), on LE (reissue), LE alias failing validation | covered | alias: Changing aliases on a self-signed site keeps HTTPS; le: alias scenarios; known bug SSL-2 |
-| alias label validation (AUTH-1) | covered (known bug) | alias: Alias domains with a label starting with an underscore are rejected |
+| alias label validation (AUTH-1) | covered (regression; fixed by #502, merged 2026-09-25) | alias: Alias domains with a label starting with an underscore are rejected |
 | alias change on custom SSL (warning) | not covered | low value; same code path as self apart from the warning text |
 | `--ssl=self` on a plain site, twice, `--ssl=off`, off on plain | covered | ussl: first four scenarios |
 | `--wildcard` refusals, invalid `--ssl`, `--ssl=off --wildcard` | covered | ussl: Switching a normal site to wildcard SSL is refused; An unknown SSL type is rejected; --wildcard cannot be combined with --ssl=off |
@@ -250,7 +250,6 @@ Verified against develop 9dc44e1 in review; details, severity and locations are 
 | backup: Restoring a WordPress site does not print its database password | LOG-3 | #484 (success path only) |
 | backup: A restored WordPress core passes checksum verification | WP-1 | none (local fix only) |
 | create: Site names that are not valid hostnames are rejected... | SEC-1 | #495 is partial (self-signed sinks only); full fix local |
-| alias: Alias domains with a label starting with an underscore... | AUTH-1 | #502 (draft) |
 | le: SSL-2, SSL-8, SSL-5/SSL-9; ssl: SEC-3, SSL-4; clean: CACHE-1 pattern; redirect: MIG-15 | as named | none (#486/#487/#493/#495/#498/#502 only touch these paths) |
 
-PRs that change what passing scenarios assert, to revisit when they merge: #480 keeps `<site>.lock` after a successful backup/restore (drop the two "lock should not exist" lines in backup), #482 adds a `--list` "No remote backups found." line and new disk-space errors, #484/#483 add new restore/backup abort messages, #486 changes the SSL-2 warning text, #487 makes `ssl-verify` fail for non-LE sites, #501 changes the clone messages on an empty destination host ("Unable to find '<site>' on '<host>'"), #502 adds alias validation messages.
+PRs that change what passing scenarios assert, to revisit when they merge: #480 keeps `<site>.lock` after a successful backup/restore (drop the two "lock should not exist" lines in backup), #482 adds a `--list` "No remote backups found." line and new disk-space errors, #484/#483 add new restore/backup abort messages, #486 changes the SSL-2 warning text, #487 makes `ssl-verify` fail for non-LE sites, #501 changes the clone messages on an empty destination host ("Unable to find '<site>' on '<host>'"). #502 merged on 2026-09-25: AUTH-1 is a regular scenario since, and "Delete an alias domain" waits for the remaining alias to answer 200 (the recreated nginx container briefly drops all of the site's domains from the proxy; https://github.com/mrrobot47/site-command/actions/runs/36099145415).

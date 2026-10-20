@@ -34,9 +34,9 @@ Feature: Update alias domains
     And STDOUT should contain "Alias domains updated on site bh-site-command-62.test."
     And the "alias_domains" field of site "bh-site-command-62.test" in the database should be "bh-site-command-62.test,bh-site-command-62-a.test"
     And the service "nginx" of site "bh-site-command-62.test" should not have the environment variable "VIRTUAL_HOST" containing "bh-site-command-62-b.test"
-    When I wait up to 60 seconds for "http://bh-site-command-62-b.test/" to not return 200
-    And I send a GET request to "http://bh-site-command-62-a.test/"
-    Then the response code should be 200
+    # The site's nginx container is recreated, so the proxy briefly drops every domain of the site until docker-gen catches up.
+    When I wait up to 60 seconds for "http://bh-site-command-62-a.test/" to return 200
+    And I wait up to 60 seconds for "http://bh-site-command-62-b.test/" to not return 200
 
   Scenario: The primary domain cannot be deleted
     Given the site "bh-site-command-62.test" exists, created with "--type=html --alias-domains=bh-site-command-62-a.test,bh-site-command-62-b.test"
@@ -88,8 +88,7 @@ Feature: Update alias domains
     When I wait up to 60 seconds for "https://bh-site-command-69.test/" to return 200
     Then the TLS certificate served for "bh-site-command-69.test" should cover "bh-site-command-69.test"
 
-  # AUTH-1: alias labels starting with "_" are accepted and can clobber a site's _wildcard proxy files. Fixed by PR #502 (38569df, draft).
-  @known-bug
+  # AUTH-1 regression: alias labels starting with "_" could clobber a site's _wildcard proxy files (fixed by #502, 38569df).
   Scenario: Alias domains with a label starting with an underscore are rejected
     Given the html site "bh-site-command-68.test" exists
     When I run 'bin/ee site update bh-site-command-68.test --add-alias-domains=_wildcard.bh-site-command-68.test'
