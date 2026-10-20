@@ -61,6 +61,8 @@ Feature: Proxy cache
     Then the command should fail
     And STDERR should contain "Site bh-site-command-85.test already has proxy cache: off"
 
+  # SC-18: any value other than "on" is accepted and runs the disable path (exit 0).
+  @known-bug
   Scenario: An invalid proxy cache switch is rejected
     Given the html site "bh-site-command-85.test" exists
     When I run 'bin/ee site update bh-site-command-85.test --proxy-cache=maybe'

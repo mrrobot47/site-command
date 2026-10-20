@@ -25,8 +25,10 @@ Feature: Clone and sync sites
     Then the command should fail
     And STDERR should contain "Invalid format for remote site. Please use [user@ssh-hostname:] sitename"
 
+  # With no site on the host the error is "Unable to get site list" instead (SC-17), so keep one site around.
   Scenario: Cloning a site that does not exist fails
-    Given the site "bh-site-command-159.test" does not exist
+    Given the html site "bh-site-command-154.test" exists
+    And the site "bh-site-command-159.test" does not exist
     And the site "bh-site-command-151.test" does not exist
     When I run 'bin/ee site clone bh-site-command-159.test bh-site-command-151.test'
     Then the command should fail

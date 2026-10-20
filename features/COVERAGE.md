@@ -1,13 +1,13 @@
 # site-command Behat coverage
 
-Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 182 scenarios (214 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
+Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 183 scenarios (215 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
 
 ## Tags
 
 | Tag | Scenarios | Meaning |
 |---|---|---|
 | (none of the tags below) | 125 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
-| `@known-bug` | 26 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
+| `@known-bug` | 28 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
 | `@destructive` | 12 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
 | `@remote` | 15 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |
 | `@le` | 11 | Real Let's Encrypt issuance on `*.ee4-test.rt.gw`. At most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. |
@@ -149,7 +149,8 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | off on a created self-signed site, wildcard flag consistency | covered (known bugs) | ussl: SSL can be disabled on a site created with self-signed SSL; Enabling self-signed SSL through update records it as wildcard... |
 | `--php` on html (fails, site intact), invalid version | covered | ussl: Changing the PHP version of an html site fails...; An unsupported PHP version is rejected; known bug SC-13: ...refused up front without leftovers |
 | `--php` real version switch (config backup/restore, sendmail path for 5.6) | not covered | php/wp sites only (site-type-php/wp suites) |
-| `--proxy-cache=on/off`, twice, custom sizes, invalid sizes, invalid switch | covered (@destructive) | pcache: all |
+| `--proxy-cache=on/off`, twice, custom sizes, invalid sizes | covered (@destructive) | pcache: all but the invalid switch |
+| invalid `--proxy-cache` value | covered (@destructive, known bug SC-18) | pcache: An invalid proxy cache switch is rejected |
 | proxy cache for aliases (existing and newly added) | covered (@destructive) | pcache: Alias domains get proxy cache locations... |
 | proxy cache `subdom` location (`*.site_location`) | not covered | WP subdom only (site-type-wp suite) |
 
@@ -160,6 +161,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | ssl-info: self, custom, inherit (parent cert file), no SSL, LE, pending wildcard | covered | ssl: ssl-info scenarios; le: create and wildcard scenarios |
 | ssl-info `--format=yaml`, invalid format | covered | ssl: ssl-info supports other formats; ssl-info rejects an unsupported format |
 | ssl-info `--get-dns-records`: non-DNS site, DNS-01 site | covered | ssl: ssl-info DNS records of a site that does not use DNS-01; le: A wildcard certificate waits... |
+| ssl-info `--get-dns-records` on a self-signed (wildcard) site | covered (known bug SC-16) | ssl: ssl-info DNS records of a self-signed site |
 | ssl-renew guards: no SSL, self, inherit | covered | ssl: ssl-renew only renews Let's Encrypt certificates (outline); ssl-renew refuses inherited certificates |
 | ssl-renew not due (no reissue), `--all` wildcard skip | covered (@le, `--all` also @destructive) | le: ssl-renew leaves a certificate that is not due alone; ssl-renew --all skips wildcard sites... |
 | ssl-renew `--force`, expired-cert path | not covered | LE budget (a forced renew is one more issuance); expiry cannot be simulated without a fake CA |
@@ -235,6 +237,9 @@ Verified against develop 9dc44e1 in review; details, severity and locations are 
 | SC-13 | `update --php` on html fails late, raw IOException, leaves `.backup/` | ussl: ...refused up front without leftovers | none |
 | SC-14 | `delete_site()` `docker rm` fallback filters on labels EE never sets | none (dead fallback) | none |
 | SC-15 | `update --ssl=custom` impossible (no `--ssl-key/--ssl-crt`) | ussl: Enable custom SSL on an existing site | #489 |
+| SC-16 | `ssl-info --get-dns-records` treats self-signed (wildcard) sites as DNS-01 | ssl: ssl-info DNS records of a self-signed site | none |
+| SC-17 | local clone/sync on a host without sites: "Unable to get site list" | none (needs a host with no site; clone: Cloning a site that does not exist fails keeps one site) | none |
+| SC-18 | `update --proxy-cache=<anything>` accepted, non-`on` disables | pcache: An invalid proxy cache switch is rejected | none |
 
 ## Other known bugs and the open PRs that fix them
 

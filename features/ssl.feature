@@ -60,6 +60,14 @@ Feature: Self-signed, custom and inherited SSL
     And the JSON field "0.status" in STDOUT should be "SSL is not enabled for this site."
 
   Scenario: ssl-info DNS records of a site that does not use DNS-01
+    Given the html site "bh-site-command-101.test" exists
+    When I run 'bin/ee site ssl-info bh-site-command-101.test --get-dns-records'
+    Then the command should succeed
+    And the JSON field "0.warnings" in STDOUT should contain "This site does not use DNS-based (DNS-01) SSL challenge."
+
+  # SC-16: self-signed sites are stored as wildcard, so ssl-info treats them as DNS-01 and reports missing challenges.
+  @known-bug
+  Scenario: ssl-info DNS records of a self-signed site
     Given the site "bh-site-command-100.test" exists, created with "--type=html --ssl=self"
     When I run 'bin/ee site ssl-info bh-site-command-100.test --get-dns-records'
     Then the command should succeed
@@ -161,7 +169,7 @@ Feature: Self-signed, custom and inherited SSL
     Then the command should fail
     And STDOUT should not contain "object("
 
-  # SEC-3: the EE root CA lacks basicConstraints CA:TRUE, so OpenSSL 3 rejects every leaf it signed (error 79).
+  # SEC-3: the EE root CA lacks basicConstraints CA:TRUE, so OpenSSL 3.5 rejects every leaf it signed (error 79). Passes on the OpenSSL 3.0 of ubuntu-24.04 runners.
   @known-bug
   Scenario: Self-signed site certificates verify against the EasyEngine root CA
     Given the site "bh-site-command-100.test" exists, created with "--type=html --ssl=self"

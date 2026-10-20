@@ -13,7 +13,8 @@ Feature: List sites
     And STDOUT should match "/^bh-site-command-41\.test$/m"
 
   Scenario: List sites as a table by default
-    When I run 'bin/ee site list'
+    # Without a TTY the default format is tab-separated; SHELL_PIPE=0 makes it render as it does in a terminal.
+    When I run 'SHELL_PIPE=0 bin/ee site list'
     Then the command should succeed
     And STDOUT should match "/\|\s*site\s*\|\s*status\s*\|/"
     And STDOUT should match "/\|\s*bh-site-command-40\.test\s*\|\s*enabled\s*\|/"
@@ -23,8 +24,8 @@ Feature: List sites
     When I run 'bin/ee site list --format=json'
     Then the command should succeed
     And STDOUT should be valid JSON
-    And STDOUT should contain "{"site":"bh-site-command-40.test","status":"enabled"}"
-    And STDOUT should contain "{"site":"bh-site-command-41.test","status":"disabled"}"
+    And STDOUT should match "/\{\s*"site":\s*"bh-site-command-40\.test",\s*"status":\s*"enabled"\s*\}/"
+    And STDOUT should match "/\{\s*"site":\s*"bh-site-command-41\.test",\s*"status":\s*"disabled"\s*\}/"
 
   Scenario: List sites as CSV
     When I run 'bin/ee site list --format=csv'
