@@ -1187,6 +1187,27 @@ class FeatureContext implements Context
 	}
 
 	/**
+	 * The proxy can serve its default certificate for a moment while it regenerates after an alias change (PRX-7).
+	 *
+	 * @Then /^the TLS certificate served for "([^"]*)" should cover "([^"]*)" within (\d+) seconds$/
+	 */
+	public function theTlsCertificateShouldCoverWithin( $host, $domain, $seconds )
+	{
+		$deadline = time() + (int) $seconds;
+		while ( true ) {
+			try {
+				$this->theTlsCertificateShouldCover( $host, '', $domain );
+				return;
+			} catch ( Exception $e ) {
+				if ( time() >= $deadline ) {
+					throw $e;
+				}
+				sleep( 2 );
+			}
+		}
+	}
+
+	/**
 	 * @Then /^the TLS certificate served for "([^"]*)" should be issued by "(.*)"$/
 	 */
 	public function theTlsCertificateShouldBeIssuedBy( $host, $issuer )

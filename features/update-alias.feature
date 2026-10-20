@@ -86,7 +86,7 @@ Feature: Update alias domains
     And STDOUT should contain "No SSL certificate action needed for self SSL on alias domain change."
     And the service "nginx" of site "bh-site-command-69.test" should not have the environment variable "HTTPS_METHOD" containing "nohttps"
     When I wait up to 60 seconds for "https://bh-site-command-69.test/" to return 200
-    Then the TLS certificate served for "bh-site-command-69.test" should cover "bh-site-command-69.test"
+    Then the TLS certificate served for "bh-site-command-69.test" should cover "bh-site-command-69.test" within 30 seconds
 
   # AUTH-1 regression: alias labels starting with "_" could clobber a site's _wildcard proxy files (fixed by #502, 38569df).
   Scenario: Alias domains with a label starting with an underscore are rejected
