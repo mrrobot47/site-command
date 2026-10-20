@@ -485,6 +485,8 @@ class FeatureContext implements Context
 			EE::launch( 'bin/ee site delete ' . escapeshellarg( $site ) . ' --yes', false, true );
 		}
 
+		self::purge_own_leftovers();
+
 		if ( in_array( 'remote', $scope->getFeature()->getTags(), true ) ) {
 			self::purge_own_remote_backups();
 		}
@@ -879,7 +881,9 @@ class FeatureContext implements Context
 		$host = $this->v( $host );
 		$this->assert_own_name( $host );
 		if ( ! $this->hosts_has_entry( $host ) ) {
-			file_put_contents( '/etc/hosts', "127.0.0.1\t$host\n", FILE_APPEND );
+			$hosts = file_get_contents( '/etc/hosts' );
+			$lead  = ( '' === $hosts || "\n" === substr( $hosts, -1 ) ) ? '' : "\n";
+			file_put_contents( '/etc/hosts', "{$lead}127.0.0.1\t$host\n", FILE_APPEND );
 			$this->added_hosts[] = $host;
 		}
 	}
@@ -1208,6 +1212,22 @@ class FeatureContext implements Context
 		}
 	}
 
+	/**
+	 * Guard for host-wide commands (e.g. `ssl-renew --all`): refuses to run when other people's sites would be touched.
+	 *
+	 * @Given /^no enabled Let's Encrypt site other than this suite's exists$/
+	 */
+	public function noForeignLetsEncryptSiteExists()
+	{
+		$sites   = is_file( EE_ROOT_DIR . '/db/ee.sqlite' ) ? self::db()->query( "SELECT site_url FROM sites WHERE site_ssl = 'le' AND site_enabled = 1" )->fetchAll( PDO::FETCH_COLUMN ) : [];
+		$foreign = array_filter( $sites, function ( $site ) {
+			return ! $this->is_own_name( $site );
+		} );
+		if ( ! empty( $foreign ) ) {
+			throw new Exception( 'Refusing to run: these Let\'s Encrypt sites would be renewed too: ' . implode( ', ', $foreign ) );
+		}
+	}
+
 	/* ----- remote backups (rclone) ----- */
 
 	/**
@@ -1217,7 +1237,13 @@ class FeatureContext implements Context
 	{
 		$site = $this->v( $site );
 		$this->assert_own_name( $site );
-		EE::launch( 'rclone purge ' . escapeshellarg( $this->rclone_path() . '/' . $site ), false, true );
+		// List first and purge only this exact site directory, never anything else on the real remote.
+		if ( in_array( $site, self::remote_dirs( $this->rclone_path() ), true ) ) {
+			EE::launch( 'rclone purge ' . escapeshellarg( $this->rclone_path() . '/' . $site ), false, true );
+		}
+		if ( ! empty( $this->remote_backups( $site ) ) ) {
+			throw new Exception( "Could not remove the remote backups of $site." );
+		}
 	}
 
 	/**
@@ -1537,11 +1563,57 @@ class FeatureContext implements Context
 	{
 		$context = new self();
 		$base    = $context->rclone_path();
-		$run     = EE::launch( 'rclone lsf --dirs-only ' . escapeshellarg( $base ), false, true );
-		foreach ( explode( "\n", trim( $run->stdout ) ) as $dir ) {
-			$dir = rtrim( trim( $dir ), '/' );
-			if ( '' !== $dir && 0 === strpos( $dir, self::SITE_PREFIX ) ) {
+		foreach ( self::remote_dirs( $base ) as $dir ) {
+			if ( 0 === strpos( $dir, self::SITE_PREFIX ) ) {
 				EE::launch( 'rclone purge ' . escapeshellarg( $base . '/' . $dir ), false, true );
+			}
+		}
+	}
+
+	/**
+	 * Top-level directories under the rclone path that look like site names (no slashes or dot-segments).
+	 */
+	private static function remote_dirs( $base )
+	{
+		$run = EE::launch( 'rclone lsf --dirs-only ' . escapeshellarg( $base ), false, true );
+		if ( 0 !== $run->return_code ) {
+			return [];
+		}
+		$dirs = array_map( function ( $dir ) {
+			return rtrim( trim( $dir ), '/' );
+		}, explode( "\n", $run->stdout ) );
+
+		return array_values( array_filter( $dirs, function ( $dir ) {
+			return 1 === preg_match( '/^[a-z0-9][a-z0-9.-]*$/', $dir ) && false === strpos( $dir, '..' );
+		} ) );
+	}
+
+	/**
+	 * Removes proxy certs/ACME state, site dirs and volumes named after this suite once none of its sites is left
+	 * (known bugs such as SSL-2/SSL-5/SSL-9 or a failed create leave them behind), so runs do not pile up state.
+	 */
+	private static function purge_own_leftovers()
+	{
+		if ( ! empty( self::own_sites() ) ) {
+			return;
+		}
+		$own   = function ( $name ) {
+			return 1 === preg_match( '/(^|\.)' . preg_quote( self::SITE_PREFIX, '/' ) . '/', $name );
+		};
+		$proxy = EE_ROOT_DIR . '/services/nginx-proxy';
+		foreach ( [ "$proxy/certs", "$proxy/acme-conf/certs", "$proxy/acme-conf/var", EE_SITE_ROOT ] as $dir ) {
+			foreach ( glob( $dir . '/*' . self::SITE_PREFIX . '*' ) ?: [] as $path ) {
+				if ( $own( basename( $path ) ) ) {
+					EE::launch( 'rm -rf ' . escapeshellarg( $path ), false, true );
+				}
+			}
+		}
+
+		$run = EE::launch( 'docker volume ls -q --filter label=org.label-schema.vendor=EasyEngine', false, true );
+		foreach ( array_filter( explode( "\n", trim( $run->stdout ) ) ) as $volume ) {
+			$label = EE::launch( "docker volume inspect -f '{{index .Labels \"io.easyengine.site\"}}' " . escapeshellarg( $volume ), false, true );
+			if ( $own( trim( $label->stdout ) ) ) {
+				EE::launch( 'docker volume rm ' . escapeshellarg( $volume ), false, true );
 			}
 		}
 	}
