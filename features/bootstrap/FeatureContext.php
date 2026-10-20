@@ -218,6 +218,17 @@ class FeatureContext implements Context
 	}
 
 	/**
+	 * Backup ids have one-second resolution (BKP-5): back-to-back backups need a second boundary between them.
+	 *
+	 * @When I wait for the next second
+	 */
+	public function iWaitForTheNextSecond()
+	{
+		$now = microtime( true );
+		usleep( (int) ( ( floor( $now ) + 1 - $now ) * 1000000 ) + 1000 );
+	}
+
+	/**
 	 * @Then /^(STDOUT|STDERR) should return exactly$/
 	 */
 	public function stdoutShouldReturnExactly($output_stream, PyStringNode $expected_output)

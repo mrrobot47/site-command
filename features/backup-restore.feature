@@ -53,6 +53,7 @@ Feature: Backup and restore
     When I run 'bin/ee site backup bh-site-command-142.test --list'
     And I save the first match of "/^(\d+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$/m" in STDOUT as "FIRST_ID"
     And I write "second" to the file "{SITES_DIR}/bh-site-command-142.test/app/htdocs/bh-marker.txt"
+    And I wait for the next second
     And I run 'bin/ee site backup bh-site-command-142.test'
     Then the command should succeed
     And the remote backup storage should have 2 backups for site "bh-site-command-142.test"
@@ -131,6 +132,7 @@ Feature: Backup and restore
     And I run 'bin/ee site backup bh-site-command-146.test --list'
     And I save the first match of "/^(\d+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$/m" in STDOUT as "A_ID"
     And I write "B" to the file "{SITES_DIR}/bh-site-command-146.test/app/htdocs/bh-marker.txt"
+    And I wait for the next second
     And I run 'bin/ee site backup bh-site-command-146.test'
     And I run 'bin/ee site backup bh-site-command-146.test --list'
     And I save the first match of "/^(\d+_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})$/m" in STDOUT as "B_ID"
@@ -147,10 +149,13 @@ Feature: Backup and restore
     And there are no remote backups for site "bh-site-command-147.test"
     When I run 'bin/ee site backup bh-site-command-147.test'
     Then the command should succeed
+    And I wait for the next second
     When I run 'bin/ee site backup bh-site-command-147.test'
     Then the command should succeed
+    And I wait for the next second
     When I run 'bin/ee site backup bh-site-command-147.test'
     Then the command should succeed
+    And I wait for the next second
     When I run 'bin/ee site backup bh-site-command-147.test'
     Then the command should succeed
     And the remote backup storage should have at most the configured "no-of-backups" backups for site "bh-site-command-147.test"
