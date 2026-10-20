@@ -1,15 +1,15 @@
 # site-command Behat coverage
 
-Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 180 scenarios (212 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
+Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 182 scenarios (214 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
 
 ## Tags
 
 | Tag | Scenarios | Meaning |
 |---|---|---|
-| (none) | 157 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. |
-| `@known-bug` | 24 | Exposes a bug from `issues.md` (ID in the comment above the scenario) or a suspected new bug ("Suspected new bug"). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
-| `@destructive` | 12 | Restarts the GLOBAL nginx-proxy (proxy cache) or renews every LE site on the host (`ssl-renew --all`). Every scenario leaves the proxy running. |
-| `@remote` | 15 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`, purged after the feature. |
+| (none of the tags below) | 125 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
+| `@known-bug` | 26 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
+| `@destructive` | 12 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
+| `@remote` | 15 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |
 | `@le` | 11 | Real Let's Encrypt issuance on `*.ee4-test.rt.gw`. At most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. |
 | `@wp` | 8 | Needs the `wp` site type (site-type-wp in the core checkout) and `ee` on PATH; slow. |
 
@@ -17,13 +17,14 @@ Default safe run: `--tags='~@le&&~@remote&&~@destructive&&~@known-bug&&~@wp'`.
 
 ## Environment rules
 
-- Every site, alias, hosts entry and remote backup path contains `bh-site-command-`. `@AfterFeature` deletes only sites matching `(^|\.)bh-site-command-`, never other sites; `@remote` features also purge `<rclone-path>/bh-site-command-*`. `@AfterScenario` removes hosts entries the scenario added, the scenario's `{TMP}` dir under `/var/tmp`, and `{BACKUP_DIR}/bh-site-command-*` leftovers.
+- Every site, alias, hosts entry and remote backup path contains `bh-site-command-`. `@AfterFeature` deletes only sites matching `(^|\.)bh-site-command-`, never other sites; once none is left it also removes suite-named leftovers of known bugs (proxy `certs/`, `acme-conf/certs|var/`, site dirs, volumes labelled with a suite name); `@remote` features also purge the listed `<rclone-path>/bh-site-command-*` directories. `@AfterScenario` removes hosts entries the scenario added, the scenario's `{TMP}` dir under `/var/tmp`, and `{BACKUP_DIR}/bh-site-command-*` leftovers.
 - The file-writing, hosts, delete and rclone steps refuse names and paths without the prefix (or outside `{TMP}`).
 - HTTP steps resolve the site name to 127.0.0.1 (whitelisted, so no HTTP auth, and no /etc/hosts entry needed); `through the public IP` goes through `hostname -I` instead; `verified` uses real DNS and full TLS verification (LE only). Redirects are never followed.
 - Waits poll (`I wait up to N seconds for URL to return CODE`, `... until the command ... succeeds`); there are no fixed sleeps.
 - Scenarios are independent: each one uses its own site or the idempotent `Given the html site "..." exists` / `exists, created with "..."`. The exception is `le.feature`, which shares three sites in file order to stay within the LE budget (each scenario still creates what it needs when run alone).
 - Commands that can hang on a known bug (CACHE-1) run under `with a timeout of N seconds`.
 - Commands that could prompt (le-mail) are guarded by `Given the EasyEngine config value "le-mail" is set`.
+- The failing LE alias (SSL-2) uses a `*.invalid` name, so no validation ever reaches a host outside `*.ee4-test.rt.gw`.
 
 ## Estimated runtime (4 CPU test host)
 
@@ -144,9 +145,9 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | `--wildcard` refusals, invalid `--ssl`, `--ssl=off --wildcard` | covered | ussl: Switching a normal site to wildcard SSL is refused; An unknown SSL type is rejected; --wildcard cannot be combined with --ssl=off |
 | `--ssl=inherit` via update (and the missing parent check) | covered | ussl: Inherit SSL from a self-signed parent through update; known bug: Inheriting SSL through update requires a wildcard parent |
 | `--ssl=le` via update | covered (@le) | le: Enable Let's Encrypt on an existing site |
-| `--ssl=custom` via update | not covered | update_ssl() has no --ssl-key/--ssl-crt handling; custom via update cannot work (flagged below) |
+| `--ssl=custom` via update | covered (known bug SC-15) | ussl: Enable custom SSL on an existing site (PR #489 adds `--ssl-key/--ssl-crt`) |
 | off on a created self-signed site, wildcard flag consistency | covered (known bugs) | ussl: SSL can be disabled on a site created with self-signed SSL; Enabling self-signed SSL through update records it as wildcard... |
-| `--php` on html (fails, site intact), invalid version | covered | ussl: Changing the PHP version of an html site fails...; An unsupported PHP version is rejected |
+| `--php` on html (fails, site intact), invalid version | covered | ussl: Changing the PHP version of an html site fails...; An unsupported PHP version is rejected; known bug SC-13: ...refused up front without leftovers |
 | `--php` real version switch (config backup/restore, sendmail path for 5.6) | not covered | php/wp sites only (site-type-php/wp suites) |
 | `--proxy-cache=on/off`, twice, custom sizes, invalid sizes, invalid switch | covered (@destructive) | pcache: all |
 | proxy cache for aliases (existing and newly added) | covered (@destructive) | pcache: Alias domains get proxy cache locations... |
@@ -186,7 +187,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | disabled site | covered | backup: A disabled site cannot be backed up...; en-dis outline |
 | `--dash-auth` format and ed-api-url check | covered | backup: A malformed --dash-auth is rejected; --dash-auth needs ed-api-url in the config |
 | `--dash-auth` success/failure callbacks, rollback of the uploaded backup | not covered | needs an EasyDash API endpoint (`ed-api-url`) |
-| per-site lock blocks, lock left by a failed restore | covered | backup: A lock file of another backup blocks the backup; known bug: A failed restore releases its lock |
+| per-site lock blocks, lock left by a failed restore | covered | backup: A lock file of another backup blocks the backup (held with flock(1), so it holds before and after PR #480); known bug SC-9: A failed restore does not block later backups |
 | BKP-1 stale download reuse | covered (known bug) | backup: Restoring by id ignores files left behind... |
 | retention (`no-of-backups`) | covered (known bug) | backup: Old backups are pruned down to no-of-backups |
 | WP backup/restore (DB, wp-content, core download), LOG-3, WP-1 | covered (@wp) | backup: three @wp scenarios |
@@ -211,24 +212,39 @@ DB and container migrations under `migrations/` (core upgrade flow), the AcmePhp
 
 ## Coverage estimate
 
-Counting the rows above as items: 113 items, 88 covered (13 of them only through `@known-bug` scenarios), 1 partial, 24 not covered, i.e. about 78% of the inventory. Every user-facing subcommand and option of the html type has at least one scenario except `update --ssl=custom` (not implemented), `ssl-renew --force`, `clone --ssl/--wildcard` and a live `share`.
+Counting the rows above as items: 113 items, 89 covered (14 of them only through `@known-bug` scenarios), 1 partial, 23 not covered, i.e. about 79% of the inventory (78% before the review). Every user-facing subcommand and option of the html type has at least one scenario except `ssl-renew --force`, `clone --ssl/--wildcard` and a live `share`.
 
-## Suspected new bugs found while writing the suite
+## Product bugs found while writing the suite (issues.md SC-1..15)
 
-Not in `issues.md` yet; each has a `@known-bug` scenario unless noted.
+Verified against develop 9dc44e1 in review; details, severity and locations are in `issues.md` ("site-command (from Behat authoring)").
 
-1. `ltrim($site, 'www.')` strips characters, not the prefix (`add_site_redirects()`, `check_www_or_non_www_domain()`, `get_cert_domains()`): `www.w.x.test` is treated as `x.test`. redirect.feature.
-2. `get_parent_of_alias()` uses `LIKE '%alias%'`, so the wrong site can be named as the owner of an alias. create.feature.
-3. `update --ssl=off` is impossible on sites created with `--ssl=self` (create stores `site_ssl_wildcard=1`, and update_ssl() refuses wildcard -> normal), while `update --ssl=self` stores 0: the flag is inconsistent. update-ssl-php.feature (two scenarios).
-4. `update --ssl=inherit` skips `check_parent_site_certs()`, so a site can inherit from a missing parent. update-ssl-php.feature.
-5. `check_parent_site_certs()` builds its exception message with `var_dump()`, dumping the parent site object to STDOUT. ssl.feature.
-6. `site reload` exits 0 when `nginx -t` fails (`reload_services()` ignores the exit code). restart-reload.feature.
-7. `site clean` without flags always fails on html sites (object/page caches cannot exist), even after purging the proxy cache. clean.feature.
-8. `convert_old_args_to_new_args()` checks `$args[1] === 'create'` (it is the site name), so the "no longer supported in EE v4" message for `--w3tc` & co. never shows. site.feature.
-9. A failed restore (or backup failing after the pre-checks) leaves `<backup-dir>/<site>.lock`; later backups/restores of the site are refused until it is removed by hand. The shutdown handler only looks at the site command's own `site_data`. backup-restore.feature.
-10. `cleanup_old_backups()` prunes only when `count > no-of-backups + 1`, keeping one backup too many. backup-restore.feature.
-11. `list_remote_backups()` tests `empty()` on `explode()`'s `['']` before filtering, so "No remote backups found." is dead code (and a missing remote dir may surface as "Error listing remote backups"). backup-restore.feature.
-12. `copy_site_db()` ignores the result of both `RevertableStepProcessor::execute()` calls, so a failed DB export/import during clone/sync still ends with "Site cloned/synced successfully" (no scenario: needs fault injection).
-13. `update --php` on an html site fails only on a missing `config/php` directory (raw Symfony IOException message) after creating `.backup/config/php-`; it should be refused up front (scenario asserts only the failure).
-14. `delete_site()`'s fallback `docker rm -f $(docker ps -q -f=label=created_by=EasyEngine -f=label=site_name=...)` uses labels EE never sets, so it never matches (no scenario).
-15. `update --ssl=custom` has no `--ssl-key/--ssl-crt` options, so custom SSL can only be set at create time (no scenario).
+| ID | Bug | Scenario | Open PR |
+|---|---|---|---|
+| SC-1 | `ltrim($site, 'www.')` strips characters, not the prefix | redirect: A www site whose next label starts with w... | none |
+| SC-2 | `get_parent_of_alias()` uses `LIKE '%alias%'` | create: The owner of an alias is reported correctly... | none |
+| SC-3 | SSL can't be turned off on a `--ssl=self` site; update stores `site_ssl_wildcard=0`, create 1 | ussl: two scenarios | none |
+| SC-4 | `update --ssl=inherit` skips the parent check | ussl: Inheriting SSL through update requires a wildcard parent | none |
+| SC-5 | inherit error message built with `var_dump()` | ssl: A failed inherit does not dump the parent site object | none |
+| SC-6 | `site reload` exits 0 when `nginx -t` fails | rr: Reload fails when the nginx config test fails | none |
+| SC-7 | `site clean` without flags always fails on html sites | clean: Cleaning without flags on a proxy-cached html site succeeds | none |
+| SC-8 | EE v3 `--w3tc` message never shows | site: Removed EE v3 cache flags give a clear error | none |
+| SC-9 | failed restore leaves `<site>.lock` and blocks later backups | backup: A failed restore does not block later backups | #480 (flock; the file stays but no longer blocks) |
+| SC-10 | retention keeps `no-of-backups + 1` | backup: Old backups are pruned down to no-of-backups | #482 |
+| SC-11 | "No remote backups found." unreachable | backup: Listing the backups of a site without backups says so | #482 |
+| SC-12 | `copy_site_db()` ignores failed export/import | none (needs fault injection) | none |
+| SC-13 | `update --php` on html fails late, raw IOException, leaves `.backup/` | ussl: ...refused up front without leftovers | none |
+| SC-14 | `delete_site()` `docker rm` fallback filters on labels EE never sets | none (dead fallback) | none |
+| SC-15 | `update --ssl=custom` impossible (no `--ssl-key/--ssl-crt`) | ussl: Enable custom SSL on an existing site | #489 |
+
+## Other known bugs and the open PRs that fix them
+
+| Scenario | Issue | Open PR |
+|---|---|---|
+| backup: Restoring by id ignores files left behind... | BKP-1 | #482 (f372636) |
+| backup: Restoring a WordPress site does not print its database password | LOG-3 | #484 (success path only) |
+| backup: A restored WordPress core passes checksum verification | WP-1 | none (local fix only) |
+| create: Site names that are not valid hostnames are rejected... | SEC-1 | #495 is partial (self-signed sinks only); full fix local |
+| alias: Alias domains with a label starting with an underscore... | AUTH-1 | #502 (draft) |
+| le: SSL-2, SSL-8, SSL-5/SSL-9; ssl: SEC-3, SSL-4; clean: CACHE-1 pattern; redirect: MIG-15 | as named | none (#486/#487/#493/#495/#498/#502 only touch these paths) |
+
+PRs that change what passing scenarios assert, to revisit when they merge: #480 keeps `<site>.lock` after a successful backup/restore (drop the two "lock should not exist" lines in backup), #482 adds a `--list` "No remote backups found." line and new disk-space errors, #484/#483 add new restore/backup abort messages, #486 changes the SSL-2 warning text, #487 makes `ssl-verify` fail for non-LE sites, #501 changes the clone messages on an empty destination host ("Unable to find '<site>' on '<host>'"), #502 adds alias validation messages.
