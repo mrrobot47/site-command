@@ -118,26 +118,6 @@ Feature: Update SSL and PHP of html sites
     Then the command should succeed
     And the "site_ssl_wildcard" field of site "bh-site-command-75.test" in the database should be "1"
 
-  # SC-4: update --ssl=inherit skips check_parent_site_certs(), which create runs, so a site can "inherit" from a parent that does not exist. No open PR.
-  @known-bug
-  Scenario: Inheriting SSL through update requires a wildcard parent
-    Given the site "bh-site-command-78.test" does not exist
-    And the html site "sub.bh-site-command-78.test" exists
-    When I run 'bin/ee site update sub.bh-site-command-78.test --ssl=inherit'
-    Then the command should fail
-    And STDERR should contain "Unable to find existing site: bh-site-command-78.test"
-    And the "site_ssl" field of site "sub.bh-site-command-78.test" in the database should be ""
-
-  # SC-13: update_php() never checks the site type; on html it mkdirs .backup/config/php- and then dies on mirror() of the
-  # missing config/php with Symfony's raw "The origin directory specified ... was not found." No open PR.
-  @known-bug
-  Scenario: Changing the PHP version of an html site is refused up front without leftovers
-    Given the html site "bh-site-command-79.test" exists
-    When I run 'bin/ee site update bh-site-command-79.test --php=8.3'
-    Then the command should fail
-    And STDERR should not contain "The origin directory specified"
-    And the directory "{SITES_DIR}/bh-site-command-79.test/.backup" should not exist
-
   # SC-15 (fixed in v4.13.1, site-command#489), regression check: update has no --ssl-key/--ssl-crt, so --ssl=custom can only be set at create time.
   Scenario: Enable custom SSL on an existing site
     Given the html site "bh-site-command-108.test" exists

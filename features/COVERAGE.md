@@ -1,20 +1,20 @@
 # site-command Behat coverage
 
-Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 188 scenarios (221 with outlines expanded). Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
+Suite for `easyengine/site-command` (the `ee site` command and the html site type). 18 features, 179 scenarios (211 with outlines expanded): main lane 190, `@wp` 10, `@le` 11. Run it the CI way (`tools/run-behat.sh site-command`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
 
 ## Tags
 
 | Tag | Scenarios | Meaning |
 |---|---|---|
-| (none of the tags below) | 128 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
-| `@known-bug` | 25 | Exposes a bug from `issues.md` (ID in the comment above the scenario, `SC-*` for the ones found while writing this suite; the comment also names the open PR that fixes it, if any). Expected to fail until fixed. Exclude with `--tags='~@known-bug'`. |
-| `@destructive` | 14 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
-| `@remote` | 15 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |
-| `@le` | 12 | Let's Encrypt issuance on `*.ee4-test.rt.gw`. Locally: real LE, at most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. On CI all 12 run against Pebble (`behat/ci/pebble-setup.sh`: EE's hardcoded LE host is redirected to Pebble, `{LE_ISSUER}` comes from `EE_BEHAT_LE_ISSUER`); 11 pass, the `@known-bug` one fails as expected (SSL-8). SSL-2 and SSL-5/SSL-9 are regular scenarios since the fixes on `fix/proxy-cache-rollback-and-le-alias` (they fail on develop until those merge). |
+| (none of the tags below) | 171 | Local only: `*.test` sites, no public DNS, no remote storage, no global restarts. This is the default safe run. |
+| `@known-bug` | 0 | Scenarios that expose open bugs are kept outside this suite and come back with their fixes. The CI lanes still exclude the tag. |
+| `@destructive` | 12 | Restarts the GLOBAL nginx-proxy (proxy cache) or runs `ssl-renew --all` (refuses to start when an enabled LE site that isn't the suite's exists). Every scenario leaves the proxy running. |
+| `@remote` | 10 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |
+| `@le` | 11 | Let's Encrypt issuance on `*.ee4-test.rt.gw`. Locally: real LE, at most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. On CI all 11 run against Pebble (`behat/ci/pebble-setup.sh`: EE's hardcoded LE host is redirected to Pebble, `{LE_ISSUER}` comes from `EE_BEHAT_LE_ISSUER`). SSL-2 and SSL-5/SSL-9 are regular scenarios since the fixes on `fix/proxy-cache-rollback-and-le-alias` (they fail on develop until those merge). |
 | `@le-real` | 0 | Needs the public LE service itself (rate limits, the real chain); never runs on CI. None so far: every `@le` scenario works on Pebble. |
-| `@wp` | 8 | Needs the `wp` site type (site-type-wp in the core checkout) and `ee` on PATH; slow. |
+| `@wp` | 10 | Needs the `wp` site type (site-type-wp in the core checkout) and `ee` on PATH; slow. |
 
-Default safe run: `--tags='~@le&&~@remote&&~@destructive&&~@known-bug&&~@wp'`.
+Default safe run: `--tags='~@le&&~@remote&&~@destructive&&~@wp'`.
 
 ## Environment rules
 
@@ -57,7 +57,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | Wrong site name inside a site dir ("Did you mean") | covered | info: Another site name inside a site directory is rejected with a hint |
 | Name normalisation: `http(s)://`, trailing slash, add `.test`, lower-case | covered | create: A site name without a dot...; The URL scheme and a trailing slash...; Upper-case site names...; info: The site name may be given as a URL |
 | EE v3 compat flags (`--html`, `--wp`, `--le`, `--mysql`, ...) | partial | create: The EE v3 --html flag (`--wp`/`--php`/`--le` belong to site-type-* / LE budget) |
-| Removed EE v3 flags error (`--w3tc`, ...) | covered (known bug) | site: Removed EE v3 cache flags give a clear error |
+| Removed EE v3 flags error (`--w3tc`, ...) | not covered yet | the removed-flag message never shows (its scenario comes back with the fix) |
 | Unknown parameter / too many positionals / missing required positional | covered | site: Unknown parameters are rejected; Extra positional arguments; Subcommands with a required site name print the usage |
 | Missing site outside a site dir (auto_site_name) | covered | site: outline over info, update, enable, disable, restart, reload, clean, ssl-info, backup, restore; ssl-renew scenario |
 | Unknown site (get_site_info) | covered | site: outlines over delete, refresh, ssl-verify, ssl, info, enable, disable, restart, update, share |
@@ -75,7 +75,7 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | `--public-dir` | covered | create: Create a site with a custom public directory |
 | `--skip-status-check` | covered | create: Create a site without the status check |
 | `--alias-domains` (DB, server_name, VIRTUAL_HOST, HTTP on alias) | covered | create: Create a site with alias domains |
-| Alias/site conflicts on create | covered | create: A domain that is an alias of another site...; An alias domain that belongs to another site...; known bug: The owner of an alias is reported correctly... |
+| Alias/site conflicts on create | covered | create: A domain that is an alias of another site...; An alias domain that belongs to another site...; not covered yet: the owner lookup matches any alias containing the name (its scenario comes back with the fix) |
 | `--ssl=self` | covered | ssl: Create a site with a self-signed certificate; Info of a self-signed site |
 | `--ssl=custom` + `--ssl-key/--ssl-crt`, validation, rollback | covered | ssl: Create a site with a custom certificate; Custom SSL needs both...; Custom SSL files must exist |
 | `--ssl=inherit` (parent checks, `--wildcard` refusal) | covered | ssl: A subdomain site inherits...; Inheriting needs an existing parent / a parent with SSL / cannot be combined with --wildcard |
@@ -124,11 +124,11 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | restart (no flag, `--nginx`, `--all`), unknown service flag | covered | rr: Restart the site containers (outline); Restart rejects services... |
 | restart refuses a broken nginx config | covered | rr: Restart refuses a broken nginx config and keeps the site serving |
 | reload (no flag, `--nginx`, `--all`), custom config applied | covered | rr: Reload nginx... (outline); Custom nginx config is applied on reload |
-| reload with a broken config | covered (known bug) | rr: Reload fails when the nginx config test fails |
+| reload with a broken config | not covered yet | reload exits 0 when `nginx -t` fails (its scenario comes back with the fix) |
 | `custom-compose` config branch of restart/enable | not covered | needs a custom compose setup (config change) |
 | clean: no flags, `--object`, `--page`, `--proxy` without proxy cache | covered | clean: first four scenarios |
 | clean `--proxy` with proxy cache | covered (@destructive, known bug CACHE-1 pattern) | clean: Cleaning the proxy cache empties it |
-| clean without flags on a proxy-cached html site | covered (known bug) | clean: Cleaning without flags on a proxy-cached html site succeeds |
+| clean without flags on a proxy-cached html site | not covered yet | clean without flags always fails on html sites (its scenario comes back with the fix) |
 | clean object/page caches with redis | not covered | only WP cache sites have them (site-type-wp suite) |
 
 ### update
@@ -145,14 +145,14 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | alias change on custom SSL (warning) | not covered | low value; same code path as self apart from the warning text |
 | `--ssl=self` on a plain site, twice, `--ssl=off`, off on plain | covered | ussl: first four scenarios |
 | `--wildcard` refusals, invalid `--ssl`, `--ssl=off --wildcard` | covered | ussl: Switching a normal site to wildcard SSL is refused; An unknown SSL type is rejected; --wildcard cannot be combined with --ssl=off |
-| `--ssl=inherit` via update (and the missing parent check) | covered | ussl: Inherit SSL from a self-signed parent through update; known bug: Inheriting SSL through update requires a wildcard parent |
+| `--ssl=inherit` via update | covered | ussl: Inherit SSL from a self-signed parent through update; not covered yet: update skips the wildcard parent check (its scenario comes back with the fix) |
 | `--ssl=le` via update | covered (@le) | le: Enable Let's Encrypt on an existing site |
 | `--ssl=custom` via update | covered (known bug SC-15) | ussl: Enable custom SSL on an existing site (PR #489 adds `--ssl-key/--ssl-crt`) |
 | off on a created self-signed site, wildcard flag consistency | covered (known bugs) | ussl: SSL can be disabled on a site created with self-signed SSL; Enabling self-signed SSL through update records it as wildcard... |
-| `--php` on html (fails, site intact), invalid version | covered | ussl: Changing the PHP version of an html site fails...; An unsupported PHP version is rejected; known bug SC-13: ...refused up front without leftovers |
+| `--php` on html (fails, site intact), invalid version | covered | ussl: Changing the PHP version of an html site fails...; An unsupported PHP version is rejected; not covered yet: the refusal comes late, with a raw IOException and a leftover `.backup/` (its scenario comes back with the fix) |
 | `--php` real version switch (config backup/restore, sendmail path for 5.6) | not covered | php/wp sites only (site-type-php/wp suites) |
 | `--proxy-cache=on/off`, twice, custom sizes, invalid sizes | covered (@destructive) | pcache: all but the invalid switch |
-| invalid `--proxy-cache` value | covered (@destructive, known bug SC-18) | pcache: An invalid proxy cache switch is rejected |
+| invalid `--proxy-cache` value | not covered yet | any value is accepted and anything but `on` disables the cache (its scenario comes back with the fix) |
 | proxy cache for aliases (existing, newly added, deleted), failed alias sync leaves a loadable config (PRX-6) | covered (@destructive) | pcache: Alias domains get proxy cache locations...; Deleting an alias removes its proxy cache location; A failed proxy cache alias sync leaves a config nginx can load |
 | proxy cache `subdom` location (`*.site_location`) | not covered | WP subdom only (site-type-wp suite) |
 
@@ -163,14 +163,16 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 | ssl-info: self, custom, inherit (parent cert file), no SSL, LE, pending wildcard | covered | ssl: ssl-info scenarios; le: create and wildcard scenarios |
 | ssl-info `--format=yaml`, invalid format | covered | ssl: ssl-info supports other formats; ssl-info rejects an unsupported format |
 | ssl-info `--get-dns-records`: non-DNS site, DNS-01 site | covered | ssl: ssl-info DNS records of a site that does not use DNS-01; le: A wildcard certificate waits... |
-| ssl-info `--get-dns-records` on a self-signed (wildcard) site | covered (known bug SC-16) | ssl: ssl-info DNS records of a self-signed site |
+| ssl-info `--get-dns-records` on a self-signed (wildcard) site | not covered yet | self-signed wildcard sites are treated as DNS-01 (its scenario comes back with the fix) |
 | ssl-renew guards: no SSL, self, inherit | covered | ssl: ssl-renew only renews Let's Encrypt certificates (outline); ssl-renew refuses inherited certificates |
 | ssl-renew not due (no reissue), `--all` wildcard skip | covered (@le, `--all` also @destructive) | le: ssl-renew leaves a certificate that is not due alone; ssl-renew --all skips wildcard sites... |
 | ssl-renew `--force`, expired-cert path | not covered | LE budget (a forced renew is one more issuance); expiry cannot be simulated without a fake CA |
 | ssl-verify / `ssl` alias: unknown site | covered | site: outline |
-| ssl-verify on a valid LE site | covered (known bug SSL-8) | le: ssl-verify of a valid Let's Encrypt site succeeds |
+| ssl-verify on a valid LE site | not covered yet | ssl-verify checks only the site name of an HTTP-01 certificate that includes www and fails (its scenario comes back with the fix) |
 | ssl-verify completing a DNS-01 order, Cloudflare DNS solver | not covered | needs Cloudflare API credentials (not configured) |
-| Self-signed root CA validity (SEC-3), alias coverage (SSL-4) | covered (known bugs) | ssl: last two scenarios |
+| Self-signed root CA validity (SEC-3) | covered | ssl: Self-signed site certificates verify against the EasyEngine root CA |
+| Self-signed certificate covering alias domains | not covered yet | the certificate leaves the alias domains out (its scenario comes back with the fix) |
+| Failed inherit error message | not covered yet | the message dumps the parent site object (its scenario comes back with the fix) |
 | SSL policy (`ssl-policy` config) | not covered | global config change (@destructive) with little behaviour beyond the template |
 
 ### share
@@ -186,23 +188,23 @@ Legend: covered / partial / not covered (reason). Feature files are abbreviated:
 |---|---|---|
 | backup html: upload, success output, remote files (metadata.json, <site>.zip, conf.zip), local cleanup, lock released | covered | backup: Back up an html site |
 | `--list` | covered | backup: Back up an html site; A disabled site cannot be backed up but its backups can be listed |
-| `--list` with no backups | covered (known bug) | backup: Listing the backups of a site without backups says so |
+| `--list` with no backups | not covered yet | the "No remote backups found." message is never printed (its scenario comes back with the fix) |
 | restore latest, restore `--id`, unknown id | covered | backup: Restore the latest backup; Restore a specific backup by id; Restoring an unknown backup id fails |
 | disabled site | covered | backup: A disabled site cannot be backed up...; en-dis outline |
 | `--dash-auth` format and ed-api-url check | covered | backup: A malformed --dash-auth is rejected; --dash-auth needs ed-api-url in the config |
 | `--dash-auth` success/failure callbacks, rollback of the uploaded backup | not covered | needs an EasyDash API endpoint (`ed-api-url`) |
-| per-site lock blocks, lock left by a failed restore | covered | backup: A lock file of another backup blocks the backup (held with flock(1), so it holds before and after PR #480); known bug SC-9: A failed restore does not block later backups |
-| BKP-1 stale download reuse | covered (known bug) | backup: Restoring by id ignores files left behind... |
-| retention (`no-of-backups`) | covered (known bug) | backup: Old backups are pruned down to no-of-backups |
-| WP backup/restore (DB, wp-content, core download), LOG-3, WP-1 | covered (@wp) | backup: three @wp scenarios |
+| per-site lock blocks, lock left by a failed restore | covered | backup: A lock file of another backup blocks the backup (held with flock(1), so it holds before and after PR #480); not covered yet: a failed restore leaves the lock file and blocks later backups (its scenario comes back with the fix) |
+| stale download reuse | not covered yet | a restore by id reuses files an earlier restore left behind (its scenario comes back with the fix) |
+| retention (`no-of-backups`) | not covered yet | retention keeps one backup more than `no-of-backups` (its scenario comes back with the fix) |
+| WP backup/restore (DB, wp-content, core download), WP-1 | covered (@wp) | backup: Back up and restore a WordPress site; A restored WordPress core passes checksum verification; not covered yet: the restore prints the database password (its scenario comes back with the fix) |
 | custom docker-compose files in backups | not covered | needs a custom compose setup |
 | disk-space checks, rclone/7z missing, apt-get auto-install (BKP-3), global backup lock wait | not covered | needs a full disk, uninstalled tools or a concurrent backup; BKP-3 needs a pending kernel upgrade |
 | BKP-2 partial SQL dump in webroot | not covered | needs a failing mysqldump (fault injection) |
-| invalid `no-of-backups` (BKP-7) | covered (known bug) | backup: An invalid no-of-backups keeps the backups and warns (config copy via `EE_CONFIG_PATH`) |
-| per-host remote layout, hosts sharing `rclone-path` (BKP-8) | covered (known bug) | backup: Hosts that share a remote keep their backups apart (two `backup-host-id` config copies) |
-| restore without any backup (BKP-12) | covered (known bug) | backup: Restoring a site without backups says so |
-| files and dotfiles not in the backup (BKP-14) | covered (known bug) | backup: A restore removes files that are not in the backup, dotfiles too |
-| WP webroot files beside WordPress (BKP-9), symlinked uploads (BKP-10) | covered (@wp, known bug) | backup: A WordPress backup holds the files next to WordPress; Symlinked uploads are backed up and restored without a loop |
+| invalid `no-of-backups` | not covered yet | an invalid value deletes backups without a warning (its scenario comes back with the fix) |
+| per-host remote layout, hosts sharing `rclone-path` | not covered yet | hosts that share a remote mix their backups (its scenario comes back with the fix) |
+| restore without any backup | not covered yet | the restore doesn't say that there is no backup (its scenario comes back with the fix) |
+| files and dotfiles not in the backup | not covered yet | a restore keeps files that are not in the backup (its scenario comes back with the fix) |
+| WP webroot files beside WordPress, symlinked uploads | not covered yet | files next to WordPress are left out and symlinked uploads loop (their scenarios come back with the fixes) |
 | restore rollback, disk-full extraction (BKP-6) | not covered | needs fault injection or a small filesystem; isolated harness `/var/tmp/fix-backup-test/harness` |
 
 ### clone / sync
@@ -222,45 +224,10 @@ DB and container migrations under `migrations/` (core upgrade flow), the AcmePhp
 
 ## Coverage estimate
 
-Counting the rows above as items: 113 items, 89 covered (14 of them only through `@known-bug` scenarios), 1 partial, 23 not covered, i.e. about 79% of the inventory (78% before the review). Every user-facing subcommand and option of the html type has at least one scenario except `ssl-renew --force`, `clone --ssl/--wildcard` and a live `share`.
+Counting the rows above as items: 124 items, 83 covered, 1 partial, 40 not covered (16 of them, marked "not covered yet", are open bugs whose scenarios come back with their fixes), i.e. about 67% of the inventory. Every user-facing subcommand and option of the html type has at least one scenario except `ssl-renew --force`, `clone --ssl/--wildcard` and a live `share`.
 
-## Product bugs found while writing the suite (issues.md SC-1..15)
+## Known bugs left out
 
-Verified against develop 9dc44e1 in review; details, severity and locations are in `issues.md` ("site-command (from Behat authoring)").
+24 scenarios that expose open bugs are not part of this suite; each comes back with the PR that fixes its bug. They cover: the www redirect of a site whose next label starts with `w`, and the redirect after re-enabling a site when the www check fails; the owner lookup of an alias that contains another alias; `update --ssl=inherit` skipping the parent check; the inherit error message dumping the parent site object; the self-signed certificate leaving out alias domains; `ssl-info --get-dns-records` on self-signed sites; `ssl-verify` on a valid Let's Encrypt site; `site reload` exiting 0 when `nginx -t` fails; `site clean` without flags on html sites; invalid `--proxy-cache` values; the removed EE v3 cache flags message; `update --php` on html sites failing late; and in backup/restore: `--list` and restore without backups, a failed restore blocking later backups, stale downloads reused by a restore, retention, invalid `no-of-backups`, hosts sharing a remote, files left over by a restore, the database password printed by a WordPress restore, and WordPress webroot files and symlinked uploads.
 
-| ID | Bug | Scenario | Open PR |
-|---|---|---|---|
-| SC-1 | `ltrim($site, 'www.')` strips characters, not the prefix | redirect: A www site whose next label starts with w... | none |
-| SC-2 | `get_parent_of_alias()` uses `LIKE '%alias%'` | create: The owner of an alias is reported correctly... | none |
-| SC-3 | SSL can't be turned off on a `--ssl=self` site (fixed on `fix/proxy-cache-rollback-and-le-alias`, now a regular scenario); update stores `site_ssl_wildcard=0`, create 1 (still `@known-bug`) | ussl: two scenarios | none |
-| SC-4 | `update --ssl=inherit` skips the parent check | ussl: Inheriting SSL through update requires a wildcard parent | none |
-| SC-5 | inherit error message built with `var_dump()` | ssl: A failed inherit does not dump the parent site object | none |
-| SC-6 | `site reload` exits 0 when `nginx -t` fails | rr: Reload fails when the nginx config test fails | none |
-| SC-7 | `site clean` without flags always fails on html sites | clean: Cleaning without flags on a proxy-cached html site succeeds | none |
-| SC-8 | EE v3 `--w3tc` message never shows | site: Removed EE v3 cache flags give a clear error | none |
-| SC-9 | failed restore leaves `<site>.lock` and blocks later backups | backup: A failed restore does not block later backups | #480 (flock; the file stays but no longer blocks) |
-| SC-10 | retention keeps `no-of-backups + 1` | backup: Old backups are pruned down to no-of-backups | #482 |
-| SC-11 | "No remote backups found." unreachable | backup: Listing the backups of a site without backups says so | #482 |
-| SC-12 | `copy_site_db()` ignores failed export/import | none (needs fault injection) | none |
-| SC-13 | `update --php` on html fails late, raw IOException, leaves `.backup/` | ussl: ...refused up front without leftovers | none |
-| SC-14 | `delete_site()` `docker rm` fallback filters on labels EE never sets | none (dead fallback) | none |
-| SC-15 | `update --ssl=custom` impossible (no `--ssl-key/--ssl-crt`) | ussl: Enable custom SSL on an existing site | #489 |
-| SC-16 | `ssl-info --get-dns-records` treats self-signed (wildcard) sites as DNS-01 | ssl: ssl-info DNS records of a self-signed site | none |
-| SC-17 | local clone/sync on a host without sites: "Unable to get site list" | none (needs a host with no site; clone: Cloning a site that does not exist fails keeps one site) | none |
-| SC-18 | `update --proxy-cache=<anything>` accepted, non-`on` disables | pcache: An invalid proxy cache switch is rejected | none |
-
-## Known bugs fixed by v4.13.1 / v4.13.2 (Behat r2, 2026-10-19)
-
-These scenarios passed in the `known-bug` lane against develop after the v4.13.2 release and are regular now (the comment above each names the fix): WP-1 (#504), SC-3 update part (#505), SC-15 (#489), CACHE-1 proxy purge (276d118), CLONE-3/7/8 (8 scenarios, #510), SEC-1 (#509), SEC-3 (#513). The tables above and below predate this and still list them as open. `@known-bug` count after r2: 24.
-
-## Other known bugs and the open PRs that fix them
-
-| Scenario | Issue | Open PR |
-|---|---|---|
-| backup: Restoring by id ignores files left behind... | BKP-1 | #482 (f372636) |
-| backup: Restoring a WordPress site does not print its database password | LOG-3 | #484 (success path only) |
-| backup: A restored WordPress core passes checksum verification | WP-1 | none (local fix only) |
-| create: Site names that are not valid hostnames are rejected... | SEC-1 | #495 is partial (self-signed sinks only); full fix local |
-| le: SSL-8; ssl: SEC-3, SSL-4; clean: CACHE-1 pattern; redirect: MIG-15 | as named | none (#486/#487/#493/#495/#498/#502 only touch these paths) |
-
-PRs that change what passing scenarios assert, to revisit when they merge: #480 keeps `<site>.lock` after a successful backup/restore (drop the two "lock should not exist" lines in backup), #482 adds a `--list` "No remote backups found." line and new disk-space errors, #484/#483 add new restore/backup abort messages, #486 changes the SSL-2 warning text, #487 makes `ssl-verify` fail for non-LE sites, #501 changes the clone messages on an empty destination host ("Unable to find '<site>' on '<host>'"). #502 merged on 2026-09-25: AUTH-1 is a regular scenario since, and "Delete an alias domain" waits for the remaining alias to answer 200 (the recreated nginx container briefly drops all of the site's domains from the proxy; https://github.com/mrrobot47/site-command/actions/runs/36099145415).
+PRs that change what passing scenarios assert, to revisit when they merge: #480 keeps `<site>.lock` after a successful backup/restore (drop the two "lock should not exist" lines in backup), #482 adds a `--list` "No remote backups found." line and new disk-space errors, #484/#483 add new restore/backup abort messages.

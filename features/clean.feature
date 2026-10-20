@@ -45,12 +45,3 @@ Feature: Clean site caches
       0
       """
     And the docker container "services_global-nginx-proxy_1" should be running
-
-  # SC-7: without flags, clean always tries object and page caches, which html sites cannot have, so it fails even after clearing the proxy cache. No open PR.
-  @destructive @known-bug
-  Scenario: Cleaning without flags on a proxy-cached html site succeeds
-    Given the html site "bh-site-command-89.test" exists
-    When I run 'bin/ee site update bh-site-command-89.test --proxy-cache=on' with a timeout of 300 seconds
-    And I run 'bin/ee site clean bh-site-command-89.test' with a timeout of 120 seconds
-    Then the command should succeed
-    And STDOUT should contain "Proxy cache cleared for bh-site-command-89.test"

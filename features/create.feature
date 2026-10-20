@@ -137,15 +137,6 @@ Feature: Create html sites
     Then the command should succeed
     And the "site_type" field of site "bh-site-command-18.test" in the database should be "html"
 
-  # SC-2: get_parent_of_alias() finds the parent with LIKE '%alias%', so a longer alias of another site (ab.X contains b.X) is reported as the owner. No open PR.
-  @known-bug
-  Scenario: The owner of an alias is reported correctly when another alias contains it
-    Given the site "bh-site-command-20.test" exists, created with "--type=html --alias-domains=ab.bh-site-command-20.test"
-    And the site "bh-site-command-21.test" exists, created with "--type=html --alias-domains=b.bh-site-command-20.test"
-    When I run 'bin/ee site create b.bh-site-command-20.test'
-    Then the command should fail
-    And STDERR should contain "already exists as an alias domain for site: bh-site-command-21.test."
-
   # SEC-1 (fixed in v4.13.2, site-command#509), regression check: site names are not validated, and unescaped shell sinks run before the create fails: the ";" splits
   # `docker volume create ... bhsitecommand22;idtest_htdocs`, creating a volume "bhsitecommand22" and running "idtest_htdocs".
   Scenario: Site names that are not valid hostnames are rejected before anything runs

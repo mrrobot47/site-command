@@ -58,26 +58,3 @@ Feature: Site Redirection
     When I send a GET request to "http://www.bh-site-command-126.test/"
     Then the response code should be 301
     And the response header "Location" should be "https://bh-site-command-126.test/"
-
-  # SC-1: add_site_redirects()/check_www_or_non_www_domain()/get_cert_domains() use ltrim($site, 'www.'), which strips characters, not the prefix: www.w.x.test becomes x.test. No open PR.
-  @known-bug
-  Scenario: A www site whose next label starts with w redirects the right name
-    Given the hosts file contains an entry for "w.bh-site-command-125.test"
-    And the site "www.w.bh-site-command-125.test" does not exist
-    When I run 'bin/ee site create www.w.bh-site-command-125.test'
-    Then the command should succeed
-    And the file "{PROXY_DIR}/conf.d/www.w.bh-site-command-125.test-redirect.conf" should contain "server_name  w.bh-site-command-125.test;"
-    When I wait up to 60 seconds for "http://w.bh-site-command-125.test/" to return 301
-    Then the response header "Location" should be "http://www.w.bh-site-command-125.test/"
-
-  # MIG-15: enable (also run by the image migration) re-checks www with a real DNS lookup and deletes the redirect when the check fails.
-  @known-bug
-  Scenario: Re-enabling a site keeps its www redirect when the www check fails
-    Given the hosts file contains an entry for "www.bh-site-command-127.test"
-    And the site "bh-site-command-127.test" does not exist
-    When I run 'bin/ee site create bh-site-command-127.test'
-    Then the file "{PROXY_DIR}/conf.d/bh-site-command-127.test-redirect.conf" should exist
-    When I remove the hosts entry for "www.bh-site-command-127.test"
-    And I run 'bin/ee site enable bh-site-command-127.test --force'
-    Then the command should succeed
-    And the file "{PROXY_DIR}/conf.d/bh-site-command-127.test-redirect.conf" should exist

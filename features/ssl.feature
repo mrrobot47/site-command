@@ -65,14 +65,6 @@ Feature: Self-signed, custom and inherited SSL
     Then the command should succeed
     And the JSON field "0.warnings" in STDOUT should contain "This site does not use DNS-based (DNS-01) SSL challenge."
 
-  # SC-16: self-signed sites are stored as wildcard, so ssl-info treats them as DNS-01 and reports missing challenges.
-  @known-bug
-  Scenario: ssl-info DNS records of a self-signed site
-    Given the site "bh-site-command-100.test" exists, created with "--type=html --ssl=self"
-    When I run 'bin/ee site ssl-info bh-site-command-100.test --get-dns-records'
-    Then the command should succeed
-    And the JSON field "0.warnings" in STDOUT should contain "This site does not use DNS-based (DNS-01) SSL challenge."
-
   Scenario Outline: ssl-renew only renews Let's Encrypt certificates
     Given the EasyEngine config value "le-mail" is set
     And the site "<site>" exists, created with "<flags>"
@@ -160,24 +152,8 @@ Feature: Self-signed, custom and inherited SSL
     And STDERR should contain "Cannot use --wildcard with --ssl=inherit"
     And the site "sub2.bh-site-command-105.test" should not exist
 
-  # SC-5: check_parent_site_certs() builds its exception message with var_dump(), which prints the parent site object to STDOUT. No open PR.
-  @known-bug
-  Scenario: A failed inherit does not dump the parent site object
-    Given the html site "bh-site-command-107.test" exists
-    And the site "sub.bh-site-command-107.test" does not exist
-    When I run 'bin/ee site create sub.bh-site-command-107.test --ssl=inherit'
-    Then the command should fail
-    And STDOUT should not contain "object("
-
   # SEC-3 (fixed in v4.13.2, site-command#513), regression check: the EE root CA lacks basicConstraints CA:TRUE, so OpenSSL 3.5 rejects every leaf it signed (error 79).
   Scenario: Self-signed site certificates verify against the EasyEngine root CA
     Given the site "bh-site-command-100.test" exists, created with "--type=html --ssl=self"
     When I run 'openssl verify -CAfile {PROXY_DIR}/self-signed-certs/rootCA.pem {PROXY_DIR}/certs/bh-site-command-100.test.crt'
     Then the command should succeed
-
-  # SSL-4: self-signed certs cover only the site and *.site, alias domains get a mismatched cert.
-  @known-bug
-  Scenario: The self-signed certificate covers alias domains
-    Given the site "bh-site-command-102.test" exists, created with "--type=html --ssl=self --alias-domains=bh-site-command-102-a.test"
-    When I wait up to 60 seconds for "https://bh-site-command-102-a.test/" to return 200
-    Then the TLS certificate served for "bh-site-command-102-a.test" should cover "bh-site-command-102-a.test"

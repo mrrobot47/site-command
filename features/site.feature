@@ -143,12 +143,3 @@ Feature: Site command basics
     When I run 'bin/ee site info bh-site-command-2.test bh-site-command-2.test'
     Then the command should fail
     And STDERR should contain "Too many positional arguments"
-
-  # SC-8: convert_old_args_to_new_args() checks $args[1] === 'create', but $args[1] is the site name, so the EE v3 flag message never shows. No open PR.
-  @known-bug
-  Scenario: Removed EE v3 cache flags give a clear error
-    Given the site "bh-site-command-3.test" does not exist
-    When I run 'bin/ee site create bh-site-command-3.test --w3tc'
-    Then the command should fail
-    And STDERR should contain "flag/s is/are no longer supported in EE v4"
-    And the site "bh-site-command-3.test" should not exist

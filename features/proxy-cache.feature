@@ -61,14 +61,6 @@ Feature: Proxy cache
     Then the command should fail
     And STDERR should contain "Site bh-site-command-85.test already has proxy cache: off"
 
-  # SC-18: any value other than "on" is accepted and runs the disable path (exit 0).
-  @known-bug
-  Scenario: An invalid proxy cache switch is rejected
-    Given the html site "bh-site-command-85.test" exists
-    When I run 'bin/ee site update bh-site-command-85.test --proxy-cache=maybe'
-    Then the command should fail
-    And STDERR should contain "Invalid value specified for 'proxy-cache'"
-
   Scenario: Alias domains get proxy cache locations, also when added later
     Given the site "bh-site-command-86.test" exists, created with "--type=html --alias-domains=bh-site-command-86-a.test"
     When I run 'bin/ee site update bh-site-command-86.test --proxy-cache=on'

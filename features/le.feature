@@ -138,14 +138,6 @@ Feature: Let's Encrypt certificates
     And the directory "{PROXY_DIR}/acme-conf/var/{LE2}" should not exist
     When I wait up to 60 seconds for "http://{LE2}/" to return 200
 
-  # SSL-8: ssl-verify checks only [site] for an HTTP-01 cert that includes www, rotates the acme-conf key and fails with "has not yet been authorized".
-  @known-bug
-  Scenario: ssl-verify of a valid Let's Encrypt site succeeds
-    Given the site "{LE1}" exists, created with "--type=html --ssl=le"
-    When I run 'bin/ee site ssl-verify {LE1}'
-    Then the command should succeed
-    And STDOUT should contain "SSL verification completed."
-
   Scenario: Deleting a Let's Encrypt site revokes and removes its certificate
     Given the site "{LE1}" exists, created with "--type=html --ssl=le"
     When I run 'bin/ee site delete {LE1} --yes'
