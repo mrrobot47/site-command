@@ -169,8 +169,7 @@ Feature: Self-signed, custom and inherited SSL
     Then the command should fail
     And STDOUT should not contain "object("
 
-  # SEC-3: the EE root CA lacks basicConstraints CA:TRUE, so OpenSSL 3.5 rejects every leaf it signed (error 79). Passes on the OpenSSL 3.0 of ubuntu-24.04 runners.
-  @known-bug
+  # SEC-3 (fixed in v4.13.2, site-command#513), regression check: the EE root CA lacks basicConstraints CA:TRUE, so OpenSSL 3.5 rejects every leaf it signed (error 79).
   Scenario: Self-signed site certificates verify against the EasyEngine root CA
     Given the site "bh-site-command-100.test" exists, created with "--type=html --ssl=self"
     When I run 'openssl verify -CAfile {PROXY_DIR}/self-signed-certs/rootCA.pem {PROXY_DIR}/certs/bh-site-command-100.test.crt'

@@ -192,8 +192,8 @@ Feature: Backup and restore
     And STDOUT should not contain "{DB_PASSWORD}"
     And STDERR should not contain "{DB_PASSWORD}"
 
-  # WP-1: `wp core download` (used by restore) writes a corrupted WordPress 7.x tree with WP-CLI 2.12. No PR yet (local fix only).
-  @wp @known-bug
+  # WP-1 (fixed in v4.13.1, site-command#504), regression check: `wp core download` (used by restore) writes a corrupted WordPress 7.x tree with WP-CLI 2.12.
+  @wp
   Scenario: A restored WordPress core passes checksum verification
     Given "ee" is installed
     And the site "bh-site-command-148.test" exists, created with "--type=wp"

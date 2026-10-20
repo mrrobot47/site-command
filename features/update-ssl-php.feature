@@ -43,9 +43,10 @@ Feature: Update SSL and PHP of html sites
     Then the command should fail
     And STDERR should contain "SSL is already disabled on bh-site-command-74.test"
 
+  # Self-signed certificates are always wildcard (site-command 5c34be8, v3.8.1), so the refusal is checked with LE; it fails before any ACME call.
   Scenario: Switching a normal site to wildcard SSL is refused
     Given the html site "bh-site-command-74.test" exists
-    When I run 'bin/ee site update bh-site-command-74.test --ssl=self --wildcard'
+    When I run 'bin/ee site update bh-site-command-74.test --ssl=le --wildcard'
     Then the command should fail
     And STDERR should contain "Update from normal SSL to wildcard SSL is not supported yet."
     And the "site_ssl" field of site "bh-site-command-74.test" in the database should be ""
@@ -110,8 +111,7 @@ Feature: Update SSL and PHP of html sites
     Then the command should succeed
     When I wait up to 60 seconds for "http://bh-site-command-71.test/" to return 200
 
-  # SC-3: create --ssl=self stores site_ssl_wildcard=1, update --ssl=self saves 0 (init_ssl() only changes the array copy). No open PR.
-  @known-bug
+  # SC-3 (fixed in v4.13.1, site-command#505), regression check: create --ssl=self stores site_ssl_wildcard=1, update --ssl=self saves 0 (init_ssl() only changes the array copy).
   Scenario: Enabling self-signed SSL through update records it as wildcard like create does
     Given the html site "bh-site-command-75.test" exists
     When I run 'bin/ee site update bh-site-command-75.test --ssl=self'
@@ -138,8 +138,7 @@ Feature: Update SSL and PHP of html sites
     And STDERR should not contain "The origin directory specified"
     And the directory "{SITES_DIR}/bh-site-command-79.test/.backup" should not exist
 
-  # SC-15: update has no --ssl-key/--ssl-crt, so --ssl=custom can only be set at create time. PR #489 adds both options.
-  @known-bug
+  # SC-15 (fixed in v4.13.1, site-command#489), regression check: update has no --ssl-key/--ssl-crt, so --ssl=custom can only be set at create time.
   Scenario: Enable custom SSL on an existing site
     Given the html site "bh-site-command-108.test" exists
     When I run "openssl req -x509 -newkey rsa:2048 -nodes -days 30 -keyout {TMP}/bh.key -out {TMP}/bh.crt -subj '/CN=bh-site-command-108.test/O=bh-site-command-custom' -addext 'subjectAltName=DNS:bh-site-command-108.test'"

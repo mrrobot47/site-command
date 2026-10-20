@@ -249,6 +249,10 @@ Verified against develop 9dc44e1 in review; details, severity and locations are 
 | SC-17 | local clone/sync on a host without sites: "Unable to get site list" | none (needs a host with no site; clone: Cloning a site that does not exist fails keeps one site) | none |
 | SC-18 | `update --proxy-cache=<anything>` accepted, non-`on` disables | pcache: An invalid proxy cache switch is rejected | none |
 
+## Known bugs fixed by v4.13.1 / v4.13.2 (Behat r2, 2026-10-19)
+
+These scenarios passed in the `known-bug` lane against develop after the v4.13.2 release and are regular now (the comment above each names the fix): WP-1 (#504), SC-3 update part (#505), SC-15 (#489), CACHE-1 proxy purge (276d118), CLONE-3/7/8 (8 scenarios, #510), SEC-1 (#509), SEC-3 (#513). The tables above and below predate this and still list them as open. `@known-bug` count after r2: 24.
+
 ## Other known bugs and the open PRs that fix them
 
 | Scenario | Issue | Open PR |

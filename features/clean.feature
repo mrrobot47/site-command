@@ -27,8 +27,8 @@ Feature: Clean site caches
     Then the command should fail
     And STDERR should contain "Proxy cache is not enabled on site."
 
-  # CACHE-1 pattern (see SC-7): the proxy purge uses `docker exec -it` and ignores the exit code (no TTY: fails silently; nested ptys: can hang), hence the timeout. No open PR.
-  @destructive @known-bug
+  # CACHE-1 pattern (see SC-7, fixed in v4.13.2 by site-command 276d118), regression check: the proxy purge used `docker exec -it` and ignored the exit code (no TTY: failed silently; nested ptys: could hang), hence the timeout.
+  @destructive
   Scenario: Cleaning the proxy cache empties it
     Given the html site "bh-site-command-89.test" exists
     When I run 'bin/ee site update bh-site-command-89.test --proxy-cache=on'

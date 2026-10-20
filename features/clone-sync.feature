@@ -25,36 +25,31 @@ Feature: Clone and sync sites
     Then the command should fail
     And STDERR should contain "Invalid format for remote site. Please use [user@ssh-hostname:] sitename"
 
-  # CLONE-7: the same-site guard only knows the literal "localhost", so a loopback address syncs a site onto itself. Fixed on fix/clone-sync-safety.
-  @known-bug
+  # CLONE-7 (fixed in v4.13.2, site-command#510), regression check: the same-site guard only knows the literal "localhost", so a loopback address syncs a site onto itself.
   Scenario: A site cannot be synced onto itself through a loopback address
     When I run 'bin/ee site sync bh-site-command-150.test root@127.0.0.1:bh-site-command-150.test'
     Then the command should fail
     And STDERR should contain "Cannot copy 'bh-site-command-150.test' on 'localhost' to 'bh-site-command-150.test' on '127.0.0.1'"
 
-  # CLONE-7: the host part accepts spaces, so ssh options pass through. Fixed on fix/clone-sync-safety.
-  @known-bug
+  # CLONE-7 (fixed in v4.13.2, site-command#510), regression check: the host part accepts spaces, so ssh options pass through.
   Scenario: ssh options in a remote location are rejected
     When I run "bin/ee site clone 'root@bh-host-a -oProxyCommand=true:bh-site-command-150.test' bh-site-command-151.test"
     Then the command should fail
     And STDERR should contain "Invalid format for remote site. Please use [user@ssh-hostname:] sitename"
 
-  # CLONE-7: `user@host:.` gives the site name "." instead of "same name as the other side". Fixed on fix/clone-sync-safety.
-  @known-bug
+  # CLONE-7 (fixed in v4.13.2, site-command#510), regression check: `user@host:.` gives the site name "." instead of "same name as the other side".
   Scenario: A remote dot means the name of the other side
     When I run 'bin/ee site clone root@bh-host-a:. .'
     Then the command should fail
     And STDERR should contain "No sitename found in source and destination site."
 
-  # CLONE-3/CLONE-7: site names go into shell commands unchecked. Fixed on fix/clone-sync-safety.
-  @known-bug
+  # CLONE-3/CLONE-7 (fixed in v4.13.2, site-command#510), regression check: site names go into shell commands unchecked.
   Scenario: A site name with shell syntax is rejected
     When I run "bin/ee site clone 'bh-site-command-150.test;true' bh-site-command-151.test"
     Then the command should fail
     And STDERR should contain "Invalid site name: bh-site-command-150.test;true"
 
-  # CLONE-8: the sync help shows `--ssl=le --wildcard`, which sync doesn't accept. Fixed on fix/clone-sync-safety.
-  @known-bug
+  # CLONE-8 (fixed in v4.13.2, site-command#510), regression check: the sync help shows `--ssl=le --wildcard`, which sync doesn't accept.
   Scenario: The sync help has no SSL example
     When I run 'bin/ee help site sync'
     Then the command should succeed
@@ -167,8 +162,8 @@ Feature: Clone and sync sites
     And the file "{SITES_DIR}/bh-site-command-158.test/app/htdocs/wp-content/uploads/bh-upload.txt" should contain "bh-site-command-upload"
     And the file "{SITES_DIR}/bh-site-command-158.test/app/htdocs/bh-not-upload.txt" should not exist
 
-  # CLONE-8: `?? false && … ?? false` precedence lets a missing --ssl-crt through to is_file(null). Fixed on fix/clone-sync-safety.
-  @wp @known-bug
+  # CLONE-8 (fixed in v4.13.2, site-command#510), regression check: `?? false && … ?? false` precedence lets a missing --ssl-crt through to is_file(null).
+  @wp
   Scenario: Cloning with --ssl=custom needs both certificate files
     Given the site "bh-site-command-157.test" exists, created with "--type=wp"
     And the site "bh-site-command-170.test" does not exist
@@ -178,8 +173,8 @@ Feature: Clone and sync sites
     And STDERR should not contain "is_file"
     And the site "bh-site-command-170.test" should not exist
 
-  # CLONE-3: the admin password goes unquoted into `ee site create`, so a space, ; or & breaks the create. Fixed on fix/clone-sync-safety.
-  @wp @known-bug
+  # CLONE-3 (fixed in v4.13.2, site-command#510), regression check: the admin password goes unquoted into `ee site create`, so a space, ; or & breaks the create.
+  @wp
   Scenario: Clone copies an admin password with spaces and shell operators
     Given the site "bh-site-command-171.test" exists, created with "--type=wp --admin-pass='bh pw;1&x'"
     And the site "bh-site-command-172.test" does not exist
@@ -188,8 +183,8 @@ Feature: Clone and sync sites
     And STDOUT should contain "Site cloned successfully."
     And the "app_admin_password" field of site "bh-site-command-172.test" in the database should be "bh pw;1&x"
 
-  # CLONE-3: values with $ or quotes would be expanded by site-type-wp's double-quoted `bash -c`, so clone leaves them out. Fixed on fix/clone-sync-safety.
-  @wp @known-bug
+  # CLONE-3 (fixed in v4.13.2, site-command#510), regression check: values with $ or quotes would be expanded by site-type-wp's double-quoted `bash -c`, so clone leaves them out.
+  @wp
   Scenario: Clone does not pass an admin password the destination shell would expand
     Given the site "bh-site-command-174.test" exists, created with "--type=wp --admin-pass='bh$pw1xyz'"
     And the site "bh-site-command-173.test" does not exist

@@ -146,10 +146,8 @@ Feature: Create html sites
     Then the command should fail
     And STDERR should contain "already exists as an alias domain for site: bh-site-command-21.test."
 
-  # SEC-1: site names are not validated, and unescaped shell sinks run before the create fails: the ";" splits
+  # SEC-1 (fixed in v4.13.2, site-command#509), regression check: site names are not validated, and unescaped shell sinks run before the create fails: the ";" splits
   # `docker volume create ... bhsitecommand22;idtest_htdocs`, creating a volume "bhsitecommand22" and running "idtest_htdocs".
-  # PR #495 only escapes the self-signed sinks; the real fix is local (issues.md SEC-1).
-  @known-bug
   Scenario: Site names that are not valid hostnames are rejected before anything runs
     Given the site "bh-site-command-22;id.test" does not exist
     When I run "bin/ee site create 'bh-site-command-22;id.test'"
