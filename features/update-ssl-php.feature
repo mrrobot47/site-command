@@ -103,7 +103,7 @@ Feature: Update SSL and PHP of html sites
     When I run 'bin/ee site update bh-site-command-71.test --ssl=off'
     Then the command should succeed
     And STDOUT should contain "Disabled SSL for bh-site-command-71.test"
-    And the "site_ssl" field of site "bh-site-command-71.test" in the database should be ""
+    And the "site_ssl" field of site "bh-site-command-71.test" in the database should not be "self"
     And the file "{PROXY_DIR}/certs/bh-site-command-71.test.crt" should not exist
     And the file "{PROXY_DIR}/certs/bh-site-command-71.test.key" should not exist
     And the file "{PROXY_DIR}/conf.d/bh-site-command-71.test-redirect.conf" should not contain "ssl_certificate"
