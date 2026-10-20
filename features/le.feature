@@ -21,7 +21,9 @@ Feature: Let's Encrypt certificates
     And the file "{PROXY_DIR}/certs/{LE1}.key" should exist
     And the directory "{PROXY_DIR}/acme-conf/certs/{LE1}" should exist
     And the hosts file should not contain an entry for "{LE1}"
-    When I send a verified GET request to "https://{LE1}/"
+    # The proxy reload that picks up the new certificate is asynchronous.
+    When I wait up to 60 seconds for "https://{LE1}/" to return 200
+    And I send a verified GET request to "https://{LE1}/"
     Then the response code should be 200
     And the response body should contain "Your html site with EasyEngine"
     And the TLS certificate served for "{LE1}" should cover "{LE1}"
