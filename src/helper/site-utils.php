@@ -1409,12 +1409,17 @@ function ssl_needs_creation( $site_url ) {
  * @param array $records     Expected TXT values by record name.
  * @param int   $timeout     Seconds to wait in total.
  * @param array $nameservers Nameservers to query by record name, as [ ip => name ], instead of looking them up.
+ * @param int   $min_wait    Seconds to wait at least once the values are served.
  *
  * @return bool True once every nameserver serves every value, false when they don't within $timeout.
  */
-function wait_for_dns_txt_records( array $records, $timeout = 120, array $nameservers = [] ) {
+function wait_for_dns_txt_records( array $records, $timeout = 120, array $nameservers = [], $min_wait = 10 ) {
 
-	$deadline = microtime( true ) + $timeout;
+	if ( empty( $records ) ) {
+		return true;
+	}
+	$start    = microtime( true );
+	$deadline = $start + $timeout;
 	$pending  = [];
 	foreach ( $records as $name => $values ) {
 		$servers = isset( $nameservers[ $name ] ) ? $nameservers[ $name ] : get_authoritative_nameservers( $name );
@@ -1435,6 +1440,9 @@ function wait_for_dns_txt_records( array $records, $timeout = 120, array $namese
 				EE::debug( "$name serves the DNS challenge value on {$pending[ $key ][2]} ($ip)." );
 				unset( $pending[ $key ] );
 			}
+			if ( function_exists( 'pcntl_signal_dispatch' ) ) {
+				pcntl_signal_dispatch();
+			}
 			if ( microtime( true ) >= $deadline ) {
 				break;
 			}
@@ -1444,14 +1452,16 @@ function wait_for_dns_txt_records( array $records, $timeout = 120, array $namese
 			break;
 		}
 		usleep( (int) ( min( $delay, $left ) * 1000000 ) );
-		// sleep()/usleep() don't run pending signal handlers on their own; the caller has no declare(ticks).
-		if ( function_exists( 'pcntl_signal_dispatch' ) ) {
-			pcntl_signal_dispatch();
-		}
 		$delay = min( $delay * 2, 16 );
 	}
 
 	if ( empty( $pending ) ) {
+		// Anycast nameservers answer from the site nearest to this server; give the others the time the fixed wait used to.
+		$left = $start + $min_wait - microtime( true );
+		if ( $left > 0 ) {
+			usleep( (int) ( $left * 1000000 ) );
+		}
+
 		return true;
 	}
 
@@ -1517,8 +1527,9 @@ function query_txt_records( $server, $name, $timeout = 3 ) {
 		$qname .= chr( strlen( $label ) ) . $label;
 	}
 	$id = random_int( 0, 0xffff );
-	// One question (TXT, IN), no RD flag, and an EDNS0 OPT record so a large answer fits in one UDP packet.
-	$query = pack( 'n6', $id, 0, 1, 0, 0, 1 ) . $qname . "\0" . pack( 'n2', 16, 1 ) . "\0" . pack( 'n2Nn', 41, 1232, 0, 0 );
+	// One question (TXT, IN) and an EDNS0 OPT record so a large answer fits in one UDP packet. Authoritative servers ignore RD,
+	// but a network that redirects port 53 to its own resolver needs it.
+	$query = pack( 'n6', $id, 0x0100, 1, 0, 0, 1 ) . $qname . "\0" . pack( 'n2', 16, 1 ) . "\0" . pack( 'n2Nn', 41, 1232, 0, 0 );
 
 	$answer = parse_dns_txt_answer( dns_exchange( $server, $query, false, $timeout ), $id );
 	if ( 'truncated' === $answer ) {
