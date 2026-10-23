@@ -1366,6 +1366,22 @@ function remove_etc_hosts_entry( $site_url ) {
 }
 
 /**
+ * Whether a Let's Encrypt site still waits for its first certificate, e.g. for `ee site ssl-verify` after a manual DNS-01 challenge.
+ *
+ * Such a site is served over HTTP only: with HTTPS on, nginx-proxy would serve it with the closest matching certificate of another site.
+ *
+ * @param string      $site_url Name of the site.
+ * @param string|null $site_ssl The site's SSL type.
+ *
+ * @return bool
+ */
+function is_le_ssl_pending( $site_url, $site_ssl ) {
+	$cert = EE_SERVICE_DIR . '/nginx-proxy/certs/' . $site_url;
+
+	return 'le' === $site_ssl && ! ( file_exists( "$cert.crt" ) && file_exists( "$cert.key" ) );
+}
+
+/**
  * Checks if the site certificate needs renewal.
  *
  * The way it differs from Site_Letsencrypt::isRenewalNecessary is that the latter
