@@ -2512,8 +2512,17 @@ abstract class EE_Site_Command {
 				throw new \Exception( sprintf( 'Let\'s Encrypt certificate could not be issued for %s. See the warnings above.', $this->site_data['site_url'] ) );
 			}
 		} catch ( \Exception $e ) {
+			$issued                      = $was_pending && ! \EE\Site\Utils\is_le_ssl_pending( $this->site_data['site_url'], 'le' );
 			$this->site_data['site_ssl'] = 'le';
 			\EE\Site\Utils\restore_files( $backup );
+			// The restore removed the first certificate of a pending site, but the compose file already serves HTTPS.
+			if ( $issued ) {
+				try {
+					$this->serve_without_https( $containers_to_start );
+				} catch ( \Exception $rollback ) {
+					EE::warning( sprintf( 'Could not put %s back on HTTP: %s', $this->site_data['site_url'], $rollback->getMessage() ) );
+				}
+			}
 			reload_global_nginx_proxy();
 			throw $e;
 		}
