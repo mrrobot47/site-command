@@ -1604,6 +1604,9 @@ class FeatureContext implements Context
 			throw new Exception( "No running $service container for $site." );
 		}
 		$run = EE::launch( "docker inspect -f '{{.State.StartedAt}}' " . $ids[0], false, true );
+		if ( 0 !== $run->return_code ) {
+			throw new Exception( "Could not inspect the $service container of $site.\n" . $this->describe( $run ) );
+		}
 
 		return trim( $run->stdout );
 	}
