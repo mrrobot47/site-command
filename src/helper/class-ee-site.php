@@ -1673,8 +1673,11 @@ abstract class EE_Site_Command {
 						$this->init_ssl( $this->site_data['site_url'], $this->site_data['site_fs_path'], $ssl_type, $wildcard, $is_www_or_non_www_pointed, $force, $alias_domains );
 
 						// init_le() only warns and clears site_ssl. A renewal keeps serving the old certificate, which its caller restores.
-						if ( empty( $this->site_data['site_ssl'] ) && ! $renew ) {
-							if ( ! $this->ssl_failure_handled_by_caller ) {
+						if ( empty( $this->site_data['site_ssl'] ) && ( ! $renew || \EE\Site\Utils\is_le_ssl_pending( $this->site_data['site_url'], 'le' ) ) ) {
+							if ( $renew ) {
+								// A pending site has no certificate to keep serving.
+								$this->serve_without_https( $containers_to_start );
+							} elseif ( ! $this->ssl_failure_handled_by_caller ) {
 								$this->serve_without_https( $containers_to_start );
 								$wildcard_flag = empty( $this->site_data['site_ssl_wildcard'] ) ? '' : ' --wildcard';
 								EE::warning( sprintf( 'SSL could not be enabled on %1$s, so it is served over HTTP only. Once the issue is fixed, enable SSL with `ee site update %1$s --ssl=%2$s%3$s`.', $this->site_data['site_url'], $ssl_type, $wildcard_flag ) );
@@ -1728,11 +1731,12 @@ abstract class EE_Site_Command {
 
 		$site_url = $this->site_data['site_url'];
 
+		$error = '';
 		try {
 			$this->dump_docker_compose_yml( [ 'nohttps' => false ] );
 			\EE\Site\Utils\start_site_containers( $this->site_data['site_fs_path'], [ 'nginx' ] );
 		} catch ( \Exception $e ) {
-			EE::error( sprintf( 'The certificate for %1$s was issued, but HTTPS could not be enabled: %2$s Fix the issue and run `ee site refresh %1$s`.', $site_url, $e->getMessage() ) );
+			$error = $e->getMessage();
 		}
 
 		// www_ssl_wrapper() kept the HTTP-only www redirect only when www pointed here (always for wildcard sites).
@@ -1740,7 +1744,13 @@ abstract class EE_Site_Command {
 			\EE\Site\Utils\add_site_redirects( $site_url, true, false );
 		}
 
+		// Also on error: ssl-verify won't see the site as pending again, and the refresh suggested below doesn't call the hook.
 		$this->site_scheme_changed( 'https' );
+
+		if ( $error ) {
+			EE::error( sprintf( 'The certificate for %1$s was issued, but HTTPS could not be enabled: %2$s Fix the issue and run `ee site refresh %1$s`.', $site_url, $error ) );
+		}
+
 		EE::log( sprintf( 'HTTPS is enabled for %s.', $site_url ) );
 	}
 
