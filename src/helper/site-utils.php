@@ -1691,7 +1691,8 @@ function ini_global_part( string $content ) {
 
 	for ( $open = strpos( $content, '[' ); false !== $open; $open = strpos( $content, '[', $open + 1 ) ) {
 		// A '[' inside a quoted value (or after a syntax error, where PHP stops anyway) starts no header.
-		if ( false === @parse_ini_string( substr( $content, 0, $open ), true, INI_SCANNER_NORMAL ) ) {
+		$before = @parse_ini_string( substr( $content, 0, $open ), true, INI_SCANNER_NORMAL );
+		if ( false === $before ) {
 			continue;
 		}
 		// A quoted name may contain ']', so try each one until the text up to it parses.
@@ -1700,7 +1701,11 @@ function ini_global_part( string $content ) {
 			if ( false === $ini ) {
 				continue;
 			}
-			if ( is_array( end( $ini ) ) && preg_match( '/^(PATH|HOST)/i', (string) key( $ini ) ) ) {
+			// Named from the header alone: a section replacing an earlier key of the same name keeps that key's position.
+			$header = @parse_ini_string( substr( $content, $open, $close - $open + 1 ), true, INI_SCANNER_NORMAL );
+			$name   = is_array( $header ) && 1 === count( $header ) ? (string) key( $header ) : '';
+			// In a comment the text parses as a header alone but adds no section.
+			if ( preg_match( '/^(PATH|HOST)/i', $name ) && is_array( $ini[ $name ] ?? null ) && ! is_array( $before[ $name ] ?? null ) ) {
 				return substr( $content, 0, $open );
 			}
 			break;
