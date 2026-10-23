@@ -1730,10 +1730,7 @@ abstract class EE_Site_Command {
 
 		try {
 			$this->dump_docker_compose_yml( [ 'nohttps' => false ] );
-			// A disabled site gets HTTPS once it is enabled again.
-			if ( ! empty( $this->site_data['site_enabled'] ) ) {
-				\EE\Site\Utils\start_site_containers( $this->site_data['site_fs_path'], [ 'nginx' ] );
-			}
+			\EE\Site\Utils\start_site_containers( $this->site_data['site_fs_path'], [ 'nginx' ] );
 		} catch ( \Exception $e ) {
 			EE::error( sprintf( 'The certificate for %1$s was issued, but HTTPS could not be enabled: %2$s Fix the issue and run `ee site refresh %1$s`.', $site_url, $e->getMessage() ) );
 		}
@@ -1778,6 +1775,10 @@ abstract class EE_Site_Command {
 
 		if ( ! $parent_site->site_ssl_wildcard ) {
 			throw new \Exception( "Cannot inherit from $parent_site_name as site does not have wildcard SSL cert" );
+		}
+
+		if ( \EE\Site\Utils\is_le_ssl_pending( $parent_site_name, $parent_site->site_ssl ) ) {
+			throw new \Exception( "Cannot inherit from $parent_site_name as its Let's Encrypt certificate waits for `ee site ssl-verify $parent_site_name`" );
 		}
 	}
 
@@ -2090,7 +2091,7 @@ abstract class EE_Site_Command {
 			$this->site_data = get_site_info( $args );
 		}
 
-		// A failed LE setup (init_le) clears site_ssl and suggests ssl-verify; point to the command that enables SSL properly.
+		// A failed LE setup (init_le) clears site_ssl; point to the command that enables SSL properly.
 		if ( empty( $this->site_data['site_ssl'] ) ) {
 			$wildcard_flag = empty( $this->site_data['site_ssl_wildcard'] ) ? '' : ' --wildcard';
 			EE::error( sprintf( 'SSL is not enabled on %1$s. Enable Let\'s Encrypt SSL with `ee site update %1$s --ssl=le%2$s`.', $this->site_data['site_url'], $wildcard_flag ) );
@@ -2490,6 +2491,7 @@ abstract class EE_Site_Command {
 	private function reissue_le_certificate( $force ) {
 
 		$backup              = \EE\Site\Utils\backup_files( \EE\Site\Utils\get_site_ssl_file_paths( $this->site_data['site_url'] ) );
+		$was_pending         = \EE\Site\Utils\is_le_ssl_pending( $this->site_data['site_url'], $this->site_data['site_ssl'] );
 		$postfix_exists      = \EE_DOCKER::service_exists( 'postfix', $this->site_data['site_fs_path'] );
 		$containers_to_start = $postfix_exists ? [ 'nginx', 'postfix' ] : [ 'nginx' ];
 
@@ -2507,6 +2509,11 @@ abstract class EE_Site_Command {
 		}
 
 		reload_global_nginx_proxy();
+
+		// A renewal or alias update can issue the first certificate of a pending site, e.g. once a Cloudflare key is set.
+		if ( $was_pending && ! \EE\Site\Utils\is_le_ssl_pending( $this->site_data['site_url'], $this->site_data['site_ssl'] ) ) {
+			$this->site_scheme_changed( 'https' );
+		}
 	}
 
 	/**
