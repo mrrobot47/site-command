@@ -130,12 +130,14 @@ Feature: Clone and sync sites
     And the site "bh-site-command-158.test" exists, created with "--type=wp"
     And I write "bh-site-command-files-v2" to the file "{SITES_DIR}/bh-site-command-157.test/app/htdocs/bh-marker.txt"
     When I run "bin/ee shell bh-site-command-157.test --skip-tty --command='wp option update blogname bh-site-command-files-only'"
-    And I run 'bin/ee site sync bh-site-command-157.test bh-site-command-158.test --files'
+    Then the command should succeed
+    When I run 'bin/ee site sync bh-site-command-157.test bh-site-command-158.test --files'
     Then the command should succeed
     And STDOUT should contain "Site synced successfully"
     And the file "{SITES_DIR}/bh-site-command-158.test/app/htdocs/bh-marker.txt" should contain "bh-site-command-files-v2"
     When I run "bin/ee shell bh-site-command-158.test --skip-tty --command='wp option get blogname'"
-    Then STDOUT should not contain "bh-site-command-files-only"
+    Then the command should succeed
+    And STDOUT should not contain "bh-site-command-files-only"
 
   @wp
   Scenario: Sync only the database
