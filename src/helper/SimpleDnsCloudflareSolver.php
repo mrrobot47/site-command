@@ -131,12 +131,12 @@ EOF
 
 		foreach ( $record_ids as $record_id ) {
 			if ( $this->dns->deleteRecord( $zoneID, $record_id ) ) {
-				EE::log( "Cleaned up DNS record: _acme-challenge.$recordName" );
+				EE::log( "Cleaned up DNS record: $recordName" );
 			} else {
 				$this->output->writeln(
 					sprintf(
 						<<<'EOF'
-		You can now cleanup your DNS by removing the domain <comment>_acme-challenge.%s.</comment>
+		You can now cleanup your DNS by removing the domain <comment>%s</comment>
 EOF
 						,
 						$recordName
