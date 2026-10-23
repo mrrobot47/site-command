@@ -1653,7 +1653,15 @@ abstract class EE_Site_Command {
 					 * we don't need to create or get new certs. We can use the existing ones.
 					 */
 					if ( $force || EE\Site\Utils\ssl_needs_creation( $this->site_data['site_url'] ) ) {
-						$this->init_ssl( $this->site_data['site_url'], $this->site_data['site_fs_path'], $this->site_data['site_ssl'], $wildcard, $is_www_or_non_www_pointed, $force, $alias_domains );
+						$ssl_type = $this->site_data['site_ssl'];
+						$this->init_ssl( $this->site_data['site_url'], $this->site_data['site_fs_path'], $ssl_type, $wildcard, $is_www_or_non_www_pointed, $force, $alias_domains );
+
+						// init_le() only warns and clears site_ssl. A renewal keeps serving the old certificate, which its caller restores.
+						if ( empty( $this->site_data['site_ssl'] ) && ! $renew ) {
+							$this->serve_without_https( $ssl_type, $containers_to_start );
+
+							return;
+						}
 					}
 				}
 
@@ -1668,6 +1676,27 @@ abstract class EE_Site_Command {
 
 			\EE\Site\Utils\reload_global_nginx_proxy();
 		}
+	}
+
+	/**
+	 * Keeps a site whose certificate could not be issued on plain HTTP.
+	 *
+	 * With HTTPS enabled in its compose file, nginx-proxy would serve the site over HTTPS with the closest matching
+	 * certificate of another site, while EasyEngine records the site without SSL.
+	 *
+	 * @param string $ssl_type            The SSL type that was requested.
+	 * @param array  $containers_to_start Containers to start for the site. Empty starts all.
+	 */
+	private function serve_without_https( $ssl_type, $containers_to_start ) {
+
+		$site_url = $this->site_data['site_url'];
+
+		$this->dump_docker_compose_yml( [ 'nohttps' => true ] );
+		\EE\Site\Utils\start_site_containers( $this->site_data['site_fs_path'], $containers_to_start );
+		\EE\Site\Utils\reload_global_nginx_proxy();
+
+		$wildcard = empty( $this->site_data['site_ssl_wildcard'] ) ? '' : ' --wildcard';
+		EE::warning( sprintf( 'SSL could not be enabled on %1$s, so it is served over HTTP only. Once the issue is fixed, enable SSL with `ee site update %1$s --ssl=%2$s%3$s`.', $site_url, $ssl_type, $wildcard ) );
 	}
 
 	/**
