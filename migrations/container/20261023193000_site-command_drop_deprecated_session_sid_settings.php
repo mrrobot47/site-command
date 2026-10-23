@@ -106,7 +106,15 @@ class DropDeprecatedSessionSidSettings extends Base {
 				if ( false === $old ) {
 					throw new \Exception( 'Could not read ' . $change['backup'] );
 				}
-				self::replace_file( $change['ini'], $old );
+				$handle = self::open_ini( $change['ini'] );
+				if ( ! $handle ) {
+					throw new \Exception( $change['ini'] . ' is gone.' );
+				}
+				try {
+					self::rewrite( $handle, $old, $change['ini'] );
+				} finally {
+					fclose( $handle );
+				}
 				$this->fs->remove( $change['backup'] );
 				self::reload_fpm( $change['site'] );
 			} catch ( \Throwable $e ) {
@@ -126,29 +134,39 @@ class DropDeprecatedSessionSidSettings extends Base {
 		$ini = $site->site_fs_path . '/config/php/php/php.ini';
 
 		// Missing on macOS, where php.ini stays in the container.
-		if ( is_link( $ini ) || ! is_file( $ini ) ) {
+		$handle = self::open_ini( $ini );
+		if ( ! $handle ) {
 			EE::debug( "Skipping $site->site_url: no php.ini at $ini." );
 
 			return;
 		}
 
-		$content = file_get_contents( $ini );
-		if ( false === $content ) {
-			throw new \Exception( "Could not read $ini." );
+		try {
+			$content = stream_get_contents( $handle );
+			if ( false === $content ) {
+				throw new \Exception( "Could not read $ini." );
+			}
+
+			list( $new_content, $removed ) = self::strip_settings( $content );
+			if ( $new_content === $content ) {
+				EE::debug( "$ini has no deprecated session ID settings." );
+
+				return;
+			}
+
+			$backup = EE_BACKUP_DIR . '/' . $site->site_url . '/php.ini.with-session-sid-settings';
+			$this->fs->dumpFile( $backup, $content );
+
+			try {
+				self::rewrite( $handle, $new_content, $ini );
+			} catch ( \Exception $e ) {
+				self::rewrite( $handle, $content, $ini );
+				throw $e;
+			}
+		} finally {
+			fclose( $handle );
 		}
 
-		list( $new_content, $removed ) = self::strip_settings( $content );
-		if ( $new_content === $content ) {
-			EE::debug( "$ini has no deprecated session ID settings." );
-
-			return;
-		}
-
-		$backup = EE_BACKUP_DIR . '/' . $site->site_url . '/php.ini.with-session-sid-settings';
-		$this->fs->mkdir( dirname( $backup ) );
-		$this->fs->copy( $ini, $backup, true );
-
-		self::replace_file( $ini, $new_content );
 		$this->changed[] = [
 			'site'   => $site,
 			'ini'    => $ini,
@@ -220,24 +238,49 @@ class DropDeprecatedSessionSidSettings extends Base {
 	}
 
 	/**
-	 * Replaces the file only once the new content is complete, keeping its mode and owner.
+	 * Opens php.ini for rewriting in place, so no other path is created, followed or re-resolved.
+	 * The site's php container can write to this directory (www-data owns it after a PHP switch).
 	 *
-	 * @param string $file    File to replace.
-	 * @param string $content New content.
+	 * @param string $file php.ini path.
+	 *
+	 * @return resource|null Null when there is no regular file.
+	 * @throws \Exception
+	 */
+	private static function open_ini( $file ) {
+
+		if ( is_link( $file ) || ! is_file( $file ) ) {
+			return null;
+		}
+
+		$handle = fopen( $file, 'r+' );
+		if ( false === $handle ) {
+			throw new \Exception( "Could not open $file." );
+		}
+
+		// Swapped for a symlink after the check, or a hard link to another file.
+		$opened = fstat( $handle );
+		clearstatcache( true, $file );
+		$linked = lstat( $file );
+		if ( ! $opened || ! $linked || $opened['dev'] !== $linked['dev'] || $opened['ino'] !== $linked['ino'] || 0100000 !== ( $linked['mode'] & 0170000 ) || 1 !== $opened['nlink'] ) {
+			fclose( $handle );
+			throw new \Exception( "$file is not a regular file." );
+		}
+
+		return $handle;
+	}
+
+	/**
+	 * The removal only shortens the file, so writing over it needs no new space; mode and owner stay.
+	 *
+	 * @param resource $handle  Handle from open_ini().
+	 * @param string   $content New content.
+	 * @param string   $file    php.ini path, for the error.
 	 *
 	 * @throws \Exception
 	 */
-	private static function replace_file( $file, $content ) {
+	private static function rewrite( $handle, $content, $file ) {
 
-		$tmp = $file . '.ee-tmp';
-		if ( strlen( $content ) !== file_put_contents( $tmp, $content )
-			|| ! chmod( $tmp, fileperms( $file ) & 0777 )
-			|| ! chown( $tmp, fileowner( $file ) )
-			|| ! chgrp( $tmp, filegroup( $file ) )
-			|| ! rename( $tmp, $file ) ) {
-			if ( is_file( $tmp ) ) {
-				unlink( $tmp );
-			}
+		if ( ! rewind( $handle ) || strlen( $content ) !== fwrite( $handle, $content ) || ! fflush( $handle ) || ! ftruncate( $handle, strlen( $content ) ) ) {
 			throw new \Exception( "Could not write $file." );
 		}
 	}
