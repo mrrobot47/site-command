@@ -1721,12 +1721,9 @@ class Site_Backup_Restore {
 			if ( ! $created ) {
 				$handle = \EE\Site\Utils\open_container_file( $file, 'r', $dir );
 				try {
-					$content = stream_get_contents( $handle );
+					$content = \EE\Site\Utils\read_container_file( $handle );
 				} finally {
 					fclose( $handle );
-				}
-				if ( false === $content ) {
-					throw new \Exception( 'could not read it' );
 				}
 			}
 
@@ -1738,7 +1735,7 @@ class Site_Backup_Restore {
 			$handle = \EE\Site\Utils\open_container_file( $file, $created ? 'create' : 'r+', $dir );
 			try {
 				$stat = fstat( $handle );
-				if ( stream_get_contents( $handle ) !== $content ) {
+				if ( \EE\Site\Utils\read_container_file( $handle ) !== $content ) {
 					throw new \Exception( 'it changed while it was checked' );
 				}
 				try {
@@ -1762,13 +1759,7 @@ class Site_Backup_Restore {
 		}
 
 		if ( $created ) {
-			// lchown never follows a symlink; the inode check skips anything swapped in since.
-			clearstatcache( true );
-			$now = @lstat( $file );
-			if ( $now && $now['ino'] === $stat['ino'] && $now['dev'] === $stat['dev'] ) {
-				@lchown( $file, fileowner( $conf_dir ) );
-				@lchgrp( $file, filegroup( $conf_dir ) );
-			}
+			\EE\Site\Utils\chown_container_file( $file, $dir, $stat );
 		}
 
 		EE::log( 'The restored custom.ini did not set session.upload_progress.enabled, so it was set to Off again. Set it to On there only if your app needs it.' );

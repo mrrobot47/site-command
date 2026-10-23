@@ -1874,6 +1874,61 @@ function rewrite_container_file( $handle, string $content ) {
 }
 
 /**
+ * Read an open file, at most $max bytes, so a file the container keeps growing can't exhaust memory.
+ *
+ * @param resource $handle Handle from open_container_file().
+ * @param int      $max    Largest size accepted.
+ *
+ * @return string
+ * @throws \Exception When it can't be read or is larger.
+ */
+function read_container_file( $handle, int $max = 65536 ) {
+
+	$name    = basename( stream_get_meta_data( $handle )['uri'] );
+	$content = stream_get_contents( $handle, $max + 1 );
+	if ( false === $content ) {
+		throw new \Exception( "could not read $name" );
+	}
+	if ( strlen( $content ) > $max ) {
+		throw new \Exception( "$name is larger than $max bytes" );
+	}
+
+	return $content;
+}
+
+/**
+ * Run $fn with the working directory set to the file's directory, checked to be $dir. Names relative to it reach that directory even if a directory above it is swapped for a symlink afterwards.
+ *
+ * @param string   $file Path.
+ * @param string   $dir  Real path of the directory it must be in.
+ * @param callable $fn   Gets the file name.
+ *
+ * @return mixed What $fn returns.
+ * @throws \Exception
+ */
+function in_container_dir( string $file, string $dir, callable $fn ) {
+
+	$name = basename( $file );
+	$cwd  = getcwd();
+	if ( ! @chdir( dirname( $file ) ) ) {
+		throw new \Exception( "could not enter the directory of $name" );
+	}
+	try {
+		// getcwd() is the kernel's path of the directory now entered.
+		if ( getcwd() !== $dir ) {
+			throw new \Exception( "a directory above $name is a symlink" );
+		}
+		clearstatcache( true );
+
+		return $fn( $name );
+	} finally {
+		if ( false !== $cwd ) {
+			@chdir( $cwd );
+		}
+	}
+}
+
+/**
  * Remove a file EasyEngine created, only while it is still that file in that directory.
  *
  * @param string $file Path.
@@ -1884,15 +1939,47 @@ function rewrite_container_file( $handle, string $content ) {
  */
 function remove_container_file( string $file, string $dir, array $stat ) {
 
-	clearstatcache( true );
-	$now = @lstat( $file );
-	if ( ! $now ) {
-		return;
-	}
-	if ( $now['ino'] !== $stat['ino'] || $now['dev'] !== $stat['dev'] || realpath( dirname( $file ) ) !== $dir ) {
-		throw new \Exception( basename( $file ) . ' was replaced, so it was left as it is' );
-	}
-	if ( ! @unlink( $file ) ) {
-		throw new \Exception( 'could not remove ' . basename( $file ) );
+	in_container_dir(
+		$file,
+		$dir,
+		function ( $name ) use ( $stat ) {
+			$now = @lstat( $name );
+			if ( ! $now ) {
+				return;
+			}
+			if ( $now['ino'] !== $stat['ino'] || $now['dev'] !== $stat['dev'] ) {
+				throw new \Exception( "$name was replaced, so it was left as it is" );
+			}
+			if ( ! @unlink( $name ) ) {
+				throw new \Exception( "could not remove $name" );
+			}
+		}
+	);
+}
+
+/**
+ * Give a file EasyEngine created the owner and group of its directory, only while it is still that file there; lchown() never follows a symlink.
+ *
+ * @param string $file Path.
+ * @param string $dir  Real path of the directory it must be in.
+ * @param array  $stat Its dev and ino.
+ */
+function chown_container_file( string $file, string $dir, array $stat ) {
+
+	try {
+		in_container_dir(
+			$file,
+			$dir,
+			function ( $name ) use ( $stat ) {
+				$now = @lstat( $name );
+				if ( $now && $now['ino'] === $stat['ino'] && $now['dev'] === $stat['dev'] ) {
+					@lchown( $name, fileowner( '.' ) );
+					@lchgrp( $name, filegroup( '.' ) );
+				}
+			}
+		);
+	} catch ( \Exception $e ) {
+		// Ownership is cosmetic here; php-fpm only reads the file.
+		EE::debug( "Could not set the owner of $file: {$e->getMessage()}" );
 	}
 }
