@@ -60,6 +60,11 @@ abstract class EE_Site_Command {
 	private $le_mail;
 
 	/**
+	 * @var bool $ssl_failure_handled_by_caller Set while update_ssl() runs www_ssl_wrapper(): it rolls back and reports a failed certificate itself.
+	 */
+	private $ssl_failure_handled_by_caller = false;
+
+	/**
 	 * @var resource $ssl_lock_handle Handle of the process-wide SSL lock.
 	 *
 	 * Static because `ssl-renew --all` renews every site in one process, and flock refuses a second handle there.
@@ -1090,7 +1095,12 @@ abstract class EE_Site_Command {
 					if ( 'custom' === $ssl ) {
 						$this->custom_site_ssl();
 					}
-					$this->www_ssl_wrapper( [ 'nginx' ] );
+					$this->ssl_failure_handled_by_caller = true;
+					try {
+						$this->www_ssl_wrapper( [ 'nginx' ] );
+					} finally {
+						$this->ssl_failure_handled_by_caller = false;
+					}
 					// init_le() only warns and clears site_ssl when the certificate could not be issued.
 					if ( empty( $this->site_data['site_ssl'] ) ) {
 						throw new \Exception( 'See the warnings above.' );
@@ -1664,9 +1674,11 @@ abstract class EE_Site_Command {
 
 						// init_le() only warns and clears site_ssl. A renewal keeps serving the old certificate, which its caller restores.
 						if ( empty( $this->site_data['site_ssl'] ) && ! $renew ) {
-							$this->serve_without_https( $containers_to_start );
-							$wildcard_flag = empty( $this->site_data['site_ssl_wildcard'] ) ? '' : ' --wildcard';
-							EE::warning( sprintf( 'SSL could not be enabled on %1$s, so it is served over HTTP only. Once the issue is fixed, enable SSL with `ee site update %1$s --ssl=%2$s%3$s`.', $this->site_data['site_url'], $ssl_type, $wildcard_flag ) );
+							if ( ! $this->ssl_failure_handled_by_caller ) {
+								$this->serve_without_https( $containers_to_start );
+								$wildcard_flag = empty( $this->site_data['site_ssl_wildcard'] ) ? '' : ' --wildcard';
+								EE::warning( sprintf( 'SSL could not be enabled on %1$s, so it is served over HTTP only. Once the issue is fixed, enable SSL with `ee site update %1$s --ssl=%2$s%3$s`.', $this->site_data['site_url'], $ssl_type, $wildcard_flag ) );
+							}
 
 							return;
 						}
@@ -1901,7 +1913,8 @@ abstract class EE_Site_Command {
 
 		if ( ! $client->authorize( $domains, $wildcard, $preferred_challenge ) ) {
 			$this->site_data['site_ssl'] = null;
-			\EE::warning( 'SSL authorization failed. Site will be created without SSL. You can fix the issue and re-run: ee site ssl-verify ' . $site_url );
+			// The caller says how to retry: ssl-verify can't, the site has no SSL now.
+			\EE::warning( 'SSL authorization failed.' );
 
 			return;
 		}
@@ -1913,9 +1926,9 @@ abstract class EE_Site_Command {
 				EE::log( 'Waiting for DNS entry propagation.' );
 				\EE\Site\Utils\wait_for_dns_txt_records( $client->getPublishedDnsRecords() );
 			}
+			// ssl_verify() reports why; the caller says how to retry.
 			if ( ! $this->ssl_verify( [], [ 'force' => $force ], $www_or_non_www ) ) {
 				$this->site_data['site_ssl'] = null;
-				\EE::warning( 'SSL verification failed. You can fix the issue and re-run: ee site ssl-verify ' . $site_url );
 
 				return;
 			}
@@ -2111,12 +2124,15 @@ abstract class EE_Site_Command {
 			$is_solver_dns   = ( $this->site_data['site_ssl_wildcard'] || 'dns' === $preferred_challenge ) ? true : false;
 			$api_key_present = ! empty( get_config_value( 'cloudflare-api-key' ) );
 
-			$warning = ( $is_solver_dns && $api_key_present )
-				? "The dns entries have not yet propogated. Manually check: \nhost -t TXT _acme-challenge." . $this->site_data['site_url'] . "\nBefore retrying `ee site ssl " . $this->site_data['site_url'] . "`"
-				: 'Failed to verify SSL.';
-
-			EE::warning( $warning );
-			EE::warning( sprintf( 'Check logs and retry `ee site ssl-verify %s` once the issue is resolved.', $this->site_data['site_url'] ) );
+			if ( $is_solver_dns && $api_key_present ) {
+				EE::warning( 'The DNS records have not propagated yet. Check them with `host -t TXT _acme-challenge.' . $this->site_data['site_url'] . '`.' );
+			} elseif ( ! $called_by_ee ) {
+				EE::warning( 'Failed to verify SSL.' );
+			}
+			// During a create, update or renewal, the caller says how to retry.
+			if ( ! $called_by_ee ) {
+				EE::warning( sprintf( 'Check logs and retry `ee site ssl-verify %s` once the issue is resolved.', $this->site_data['site_url'] ) );
+			}
 
 			return false;
 		}
