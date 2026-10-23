@@ -1978,6 +1978,10 @@ abstract class EE_Site_Command {
 		curl_setopt( $curl, CURLOPT_URL, $site_url );
 		curl_setopt( $curl, CURLOPT_RETURNTRANSFER, true );
 		curl_setopt( $curl, CURLOPT_FOLLOWLOCATION, true );
+		// Like Let's Encrypt's HTTP-01 validator, follow a redirect to HTTPS without validating its certificate: it may not exist yet
+		// (or nginx-proxy serves another site's), and the random content alone proves the request reached this site.
+		curl_setopt( $curl, CURLOPT_SSL_VERIFYPEER, false );
+		curl_setopt( $curl, CURLOPT_SSL_VERIFYHOST, 0 );
 		curl_setopt( $curl, CURLOPT_HEADER, false );
 		$data      = curl_exec( $curl );
 		$http_code = curl_getinfo( $curl, CURLINFO_HTTP_CODE );
