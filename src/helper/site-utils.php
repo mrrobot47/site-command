@@ -1752,7 +1752,7 @@ function site_php_conf_dir( string $site_fs_path ) {
  * Host root must not write through a symlink, a hard link or a swapped directory, so the handle has to be the regular file in $dir. On Linux the kernel's own path of the open file decides; elsewhere the path is checked before and after opening.
  *
  * @param string $file Path.
- * @param string $mode 'r', 'r+', or 'create', which fails when anything, even a dangling symlink, is at the path.
+ * @param string $mode 'r' or 'r+'. Nothing is created: PHP expands every path it creates or links to an absolute one, so it can't be confined to a directory the container can swap.
  * @param string $dir  Real path of the directory the file must be in.
  *
  * @return resource
@@ -1760,46 +1760,14 @@ function site_php_conf_dir( string $site_fs_path ) {
  */
 function open_container_file( string $file, string $mode, string $dir ) {
 
+	if ( 'r' !== $mode && 'r+' !== $mode ) {
+		throw new \InvalidArgumentException( "Unsupported mode $mode." );
+	}
+
 	$name = basename( $file );
 	clearstatcache( true );
 	if ( realpath( dirname( $file ) ) !== $dir ) {
 		throw new \Exception( "a directory above $name is a symlink" );
-	}
-
-	if ( 'create' === $mode ) {
-		// fopen() follows a dangling symlink even with 'x', so create an unguessable name and link it into place: link() neither follows nor replaces anything there.
-		$tmp    = dirname( $file ) . "/.$name.ee-" . bin2hex( random_bytes( 8 ) );
-		$umask  = umask( 022 );
-		$handle = @fopen( $tmp, 'x+' );
-		umask( $umask );
-		if ( false === $handle ) {
-			throw new \Exception( "could not create $name" );
-		}
-		$created = fstat( $handle );
-		$linked  = @link( $tmp, $file );
-		@unlink( $tmp );
-		fclose( $handle );
-		if ( ! $linked ) {
-			throw new \Exception( "could not create $name" );
-		}
-
-		try {
-			$handle = open_container_file( $file, 'r+', $dir );
-			$opened = fstat( $handle );
-			if ( $opened['ino'] !== $created['ino'] || $opened['dev'] !== $created['dev'] ) {
-				fclose( $handle );
-				throw new \Exception( "$name was replaced while it was created" );
-			}
-		} catch ( \Exception $e ) {
-			try {
-				remove_container_file( $file, $dir, $created );
-			} catch ( \Exception $ignored ) {
-				// Not ours any more.
-			}
-			throw $e;
-		}
-
-		return $handle;
 	}
 
 	$handle = @fopen( $file, $mode );
@@ -1868,7 +1836,8 @@ function opened_file_path( $handle ) {
  */
 function rewrite_container_file( $handle, string $content ) {
 
-	if ( ! rewind( $handle ) || strlen( $content ) !== fwrite( $handle, $content ) || ! fflush( $handle ) || ! ftruncate( $handle, strlen( $content ) ) || ! rewind( $handle ) || stream_get_contents( $handle ) !== $content ) {
+	// The read-back stops one byte past the content, so data the container appends can't make it unbounded.
+	if ( ! rewind( $handle ) || strlen( $content ) !== fwrite( $handle, $content ) || ! fflush( $handle ) || ! ftruncate( $handle, strlen( $content ) ) || ! rewind( $handle ) || stream_get_contents( $handle, strlen( $content ) + 1 ) !== $content ) {
 		throw new \Exception( 'could not write ' . basename( stream_get_meta_data( $handle )['uri'] ) );
 	}
 }
@@ -1894,92 +1863,4 @@ function read_container_file( $handle, int $max = 65536 ) {
 	}
 
 	return $content;
-}
-
-/**
- * Run $fn with the working directory set to the file's directory, checked to be $dir. Names relative to it reach that directory even if a directory above it is swapped for a symlink afterwards.
- *
- * @param string   $file Path.
- * @param string   $dir  Real path of the directory it must be in.
- * @param callable $fn   Gets the file name.
- *
- * @return mixed What $fn returns.
- * @throws \Exception
- */
-function in_container_dir( string $file, string $dir, callable $fn ) {
-
-	$name = basename( $file );
-	$cwd  = getcwd();
-	if ( ! @chdir( dirname( $file ) ) ) {
-		throw new \Exception( "could not enter the directory of $name" );
-	}
-	try {
-		// getcwd() is the kernel's path of the directory now entered.
-		if ( getcwd() !== $dir ) {
-			throw new \Exception( "a directory above $name is a symlink" );
-		}
-		clearstatcache( true );
-
-		return $fn( $name );
-	} finally {
-		if ( false !== $cwd ) {
-			@chdir( $cwd );
-		}
-	}
-}
-
-/**
- * Remove a file EasyEngine created, only while it is still that file in that directory.
- *
- * @param string $file Path.
- * @param string $dir  Real path of the directory it must be in.
- * @param array  $stat Its dev and ino.
- *
- * @throws \Exception When it was replaced or can't be removed.
- */
-function remove_container_file( string $file, string $dir, array $stat ) {
-
-	in_container_dir(
-		$file,
-		$dir,
-		function ( $name ) use ( $stat ) {
-			$now = @lstat( $name );
-			if ( ! $now ) {
-				return;
-			}
-			if ( $now['ino'] !== $stat['ino'] || $now['dev'] !== $stat['dev'] ) {
-				throw new \Exception( "$name was replaced, so it was left as it is" );
-			}
-			if ( ! @unlink( $name ) ) {
-				throw new \Exception( "could not remove $name" );
-			}
-		}
-	);
-}
-
-/**
- * Give a file EasyEngine created the owner and group of its directory, only while it is still that file there; lchown() never follows a symlink.
- *
- * @param string $file Path.
- * @param string $dir  Real path of the directory it must be in.
- * @param array  $stat Its dev and ino.
- */
-function chown_container_file( string $file, string $dir, array $stat ) {
-
-	try {
-		in_container_dir(
-			$file,
-			$dir,
-			function ( $name ) use ( $stat ) {
-				$now = @lstat( $name );
-				if ( $now && $now['ino'] === $stat['ino'] && $now['dev'] === $stat['dev'] ) {
-					@lchown( $name, fileowner( '.' ) );
-					@lchgrp( $name, filegroup( '.' ) );
-				}
-			}
-		);
-	} catch ( \Exception $e ) {
-		// Ownership is cosmetic here; php-fpm only reads the file.
-		EE::debug( "Could not set the owner of $file: {$e->getMessage()}" );
-	}
 }

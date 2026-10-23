@@ -1703,28 +1703,24 @@ class Site_Backup_Restore {
 	 */
 	private function keep_session_upload_progress_off() {
 		$site_url = $this->site_data['site_url'];
-		$conf_dir = EE_ROOT_DIR . '/sites/' . $site_url . '/config/php/php/conf.d';
-		$file     = $conf_dir . '/custom.ini';
+		$file     = EE_ROOT_DIR . '/sites/' . $site_url . '/config/php/php/conf.d/custom.ini';
 		$manual   = "Add 'session.upload_progress.enabled = Off' to $file and run: ee site reload $site_url";
 
-		$created = ! file_exists( $file ) && ! is_link( $file );
-		if ( is_link( $file ) || ( ! $created && ! is_file( $file ) ) || ( $created && ! is_dir( $conf_dir ) ) ) {
-			EE::warning( "Could not check session.upload_progress in the restored custom.ini: it is not a regular file or its directory is missing. $manual" );
+		// Not created when missing: PHP can't create a file safely in a directory the site's container can swap.
+		if ( is_link( $file ) || ! is_file( $file ) ) {
+			EE::warning( "Could not check session.upload_progress in the restored custom.ini: it is missing or not a regular file. $manual" );
 
 			return;
 		}
 
 		// The directory is in the site's config volume, which its php container can change: every read and write goes through a checked handle.
 		try {
-			$dir     = \EE\Site\Utils\site_php_conf_dir( EE_ROOT_DIR . '/sites/' . $site_url );
-			$content = '';
-			if ( ! $created ) {
-				$handle = \EE\Site\Utils\open_container_file( $file, 'r', $dir );
-				try {
-					$content = \EE\Site\Utils\read_container_file( $handle );
-				} finally {
-					fclose( $handle );
-				}
+			$dir    = \EE\Site\Utils\site_php_conf_dir( EE_ROOT_DIR . '/sites/' . $site_url );
+			$handle = \EE\Site\Utils\open_container_file( $file, 'r', $dir );
+			try {
+				$content = \EE\Site\Utils\read_container_file( $handle );
+			} finally {
+				fclose( $handle );
 			}
 
 			$new_content = \EE\Site\Utils\add_session_upload_progress_off( $content );
@@ -1732,21 +1728,16 @@ class Site_Backup_Restore {
 				return;
 			}
 
-			$handle = \EE\Site\Utils\open_container_file( $file, $created ? 'create' : 'r+', $dir );
+			$handle = \EE\Site\Utils\open_container_file( $file, 'r+', $dir );
 			try {
-				$stat = fstat( $handle );
 				if ( \EE\Site\Utils\read_container_file( $handle ) !== $content ) {
 					throw new \Exception( 'it changed while it was checked' );
 				}
 				try {
 					\EE\Site\Utils\rewrite_container_file( $handle, $new_content );
 				} catch ( \Exception $e ) {
-					// A short write leaves part of the file; put the restored one back, or remove the new one.
-					if ( $created ) {
-						\EE\Site\Utils\remove_container_file( $file, $dir, $stat );
-					} else {
-						\EE\Site\Utils\rewrite_container_file( $handle, $content );
-					}
+					// A short write leaves part of the file; put the restored one back.
+					\EE\Site\Utils\rewrite_container_file( $handle, $content );
 					throw $e;
 				}
 			} finally {
@@ -1756,10 +1747,6 @@ class Site_Backup_Restore {
 			EE::warning( "Could not turn off session.upload_progress in the restored custom.ini ({$e->getMessage()}). $manual" );
 
 			return;
-		}
-
-		if ( $created ) {
-			\EE\Site\Utils\chown_container_file( $file, $dir, $stat );
 		}
 
 		EE::log( 'The restored custom.ini did not set session.upload_progress.enabled, so it was set to Off again. Set it to On there only if your app needs it.' );
