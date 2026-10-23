@@ -1691,7 +1691,7 @@ function ini_global_value( string $content, string $key ) {
 }
 
 /**
- * The part of ini content before the first section whose name starts with PATH or HOST.
+ * The part of ini content before the first section named PATH or HOST plus at least one more character.
  *
  * PHP scopes every entry after such a header to it, even under later ordinary headers. The parser decides where each
  * header ends and what it is called, so any line ending, quoted names and several headers on one line are handled.
@@ -1717,7 +1717,8 @@ function ini_global_part( string $content ) {
 				continue;
 			}
 			$header = @parse_ini_string( substr( $content, $open, $close - $open + 1 ), true, INI_SCANNER_NORMAL );
-			if ( is_array( $header ) && 1 === count( $header ) && preg_match( '/^(PATH|HOST)/i', (string) key( $header ) ) ) {
+			// PHP scopes only a name with something after PATH or HOST; entries under a bare [PATH] stay global.
+			if ( is_array( $header ) && 1 === count( $header ) && preg_match( '/^(PATH|HOST)./is', (string) key( $header ) ) ) {
 				return substr( $content, 0, $open );
 			}
 			break;
