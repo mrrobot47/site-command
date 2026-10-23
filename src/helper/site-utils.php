@@ -1623,3 +1623,92 @@ function get_wp_core_download_command( string $path, array $args = [] ) {
 	// docker_compose_exec() wraps the command in bash -c "...".
 	return addcslashes( $script, '"$`\\' );
 }
+
+/**
+ * Add `session.upload_progress.enabled = Off` to a site's custom.ini content, unless the content already sets it globally.
+ *
+ * Same rule as the v4.13.3 upload-progress migrations: an effective global line, On or Off, is the user's choice and is kept.
+ *
+ * @param string $content custom.ini content.
+ *
+ * @return string|null The new content, or null when it already sets the directive.
+ */
+function add_session_upload_progress_off( string $content ) {
+
+	$bom = '';
+	if ( 0 === strpos( $content, "\xEF\xBB\xBF" ) ) {
+		$bom     = "\xEF\xBB\xBF";
+		$content = substr( $content, 3 );
+	}
+
+	if ( ini_sets_globally( $content, 'session.upload_progress.enabled' ) ) {
+		return null;
+	}
+
+	$eol   = false !== strpos( $content, "\r\n" ) ? "\r\n" : "\n";
+	$lines = '; Session upload progress is off for security; set it to On only if your app needs it.' . $eol . 'session.upload_progress.enabled = Off' . $eol;
+
+	if ( '' === trim( $content ) ) {
+		return $bom . $lines;
+	}
+
+	// At the very top, so neither a [PATH=]/[HOST=] section nor a multi-line quoted value can capture it.
+	return $bom . $lines . $eol . $content;
+}
+
+/**
+ * Whether ini content sets a directive outside any [PATH=]/[HOST=] section, read the way PHP reads php.ini.
+ *
+ * @param string $content ini content without BOM.
+ * @param string $key     Directive name (case-sensitive, like PHP).
+ *
+ * @return bool
+ */
+function ini_sets_globally( string $content, string $key ) {
+
+	$global = ini_global_part( $content );
+	$ini    = @parse_ini_string( $global, true, INI_SCANNER_NORMAL );
+	// PHP applies the lines above a syntax error, so only that part counts.
+	for ( $lines = preg_split( '/(?<=\n)/', $global ), $n = count( $lines ) - 1; false === $ini && $n > 0; $n-- ) {
+		$ini = @parse_ini_string( implode( '', array_slice( $lines, 0, $n ) ), true, INI_SCANNER_NORMAL );
+	}
+	if ( false === $ini ) {
+		return false;
+	}
+
+	foreach ( $ini as $name => $value ) {
+		if ( is_array( $value ) ? array_key_exists( $key, $value ) : $key === $name ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * The part of ini content before the first section whose name starts with PATH or HOST.
+ *
+ * PHP scopes every entry after such a header to it, even under later ordinary headers. The parser decides what a header's
+ * name is, so CRLF line endings and quoted names like ["PATH=/x"] are handled the way PHP handles them.
+ *
+ * @param string $content ini content without BOM.
+ *
+ * @return string
+ */
+function ini_global_part( string $content ) {
+
+	if ( ! preg_match_all( '/^[ \t]*\[/m', $content, $matches, PREG_OFFSET_CAPTURE ) ) {
+		return $content;
+	}
+
+	foreach ( $matches[0] as $match ) {
+		$eol = strpos( $content, "\n", $match[1] );
+		// Text inside a multi-line quoted value doesn't parse as the last section.
+		$ini = @parse_ini_string( false === $eol ? $content : substr( $content, 0, $eol ), true, INI_SCANNER_NORMAL );
+		if ( false !== $ini && is_array( end( $ini ) ) && preg_match( '/^(PATH|HOST)/i', (string) key( $ini ) ) ) {
+			return substr( $content, 0, $match[1] );
+		}
+	}
+
+	return $content;
+}

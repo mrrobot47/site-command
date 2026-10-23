@@ -1693,6 +1693,54 @@ class Site_Backup_Restore {
 			$restore_command = sprintf( 'rsync -a %s/php/php/conf.d/custom.ini %s/config/php/php/conf.d/custom.ini', $backup_dir, EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
 			EE::exec( $restore_command );
 		}
+
+		$this->keep_session_upload_progress_off();
+	}
+
+	/**
+	 * A backup taken before v4.13.3 brings back a custom.ini without `session.upload_progress.enabled = Off`, so add it
+	 * again unless the restored file sets the directive itself. The site reload at the end of the restore applies it.
+	 */
+	private function keep_session_upload_progress_off() {
+		$site_url = $this->site_data['site_url'];
+		$conf_dir = EE_ROOT_DIR . '/sites/' . $site_url . '/config/php/php/conf.d';
+		$file     = $conf_dir . '/custom.ini';
+		$manual   = "Add 'session.upload_progress.enabled = Off' to $file and run: ee site reload $site_url";
+
+		$created = ! file_exists( $file ) && ! is_link( $file );
+		if ( is_link( $file ) || ( ! $created && ! is_file( $file ) ) || ( $created && ! is_dir( $conf_dir ) ) ) {
+			EE::warning( "Could not check session.upload_progress in the restored custom.ini: it is not a regular file or its directory is missing. $manual" );
+
+			return;
+		}
+
+		$content = $created ? '' : @file_get_contents( $file );
+		if ( false === $content ) {
+			EE::warning( "Could not read the restored custom.ini to check session.upload_progress. $manual" );
+
+			return;
+		}
+
+		$new_content = \EE\Site\Utils\add_session_upload_progress_off( $content );
+		if ( null === $new_content ) {
+			return;
+		}
+
+		// Written in place: keeps owner, mode and inode (macOS bind-mounts this single file).
+		$written = @file_put_contents( $file, $new_content );
+		clearstatcache( true, $file );
+		if ( strlen( $new_content ) !== $written ) {
+			EE::warning( "Could not turn off session.upload_progress in the restored custom.ini. $manual" );
+
+			return;
+		}
+		if ( $created ) {
+			@chmod( $file, 0644 );
+			@chown( $file, fileowner( $conf_dir ) );
+			@chgrp( $file, filegroup( $conf_dir ) );
+		}
+
+		EE::log( 'The restored custom.ini did not set session.upload_progress.enabled, so it was set to Off again. Set it to On there only if your app needs it.' );
 	}
 
 	/**
