@@ -1666,6 +1666,19 @@ function add_session_upload_progress_off( string $content ) {
  */
 function ini_sets_globally( string $content, string $key ) {
 
+	return null !== ini_global_value( $content, $key );
+}
+
+/**
+ * The value a directive gets outside any [PATH=]/[HOST=] section, read the way PHP reads php.ini.
+ *
+ * @param string $content ini content without BOM.
+ * @param string $key     Directive name (case-sensitive, like PHP).
+ *
+ * @return string|null The value as PHP's ini scanner gives it (On is "1", Off is ""), or null when it isn't set there.
+ */
+function ini_global_value( string $content, string $key ) {
+
 	$global = ini_global_part( $content );
 	// Without sections, entries of ordinary sections are global and `foo[key] = x` stays an array, so it can't match.
 	$ini = @parse_ini_string( $global, false, INI_SCANNER_NORMAL );
@@ -1674,7 +1687,7 @@ function ini_sets_globally( string $content, string $key ) {
 		$ini = @parse_ini_string( implode( '', array_slice( $lines, 0, $n ) ), false, INI_SCANNER_NORMAL );
 	}
 
-	return false !== $ini && array_key_exists( $key, $ini ) && ! is_array( $ini[ $key ] );
+	return false !== $ini && array_key_exists( $key, $ini ) && ! is_array( $ini[ $key ] ) ? (string) $ini[ $key ] : null;
 }
 
 /**
