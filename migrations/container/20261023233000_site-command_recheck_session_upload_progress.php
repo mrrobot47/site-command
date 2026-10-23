@@ -7,6 +7,10 @@ use EE\Model\Site;
 use function EE\Site\Utils\add_session_upload_progress_off;
 use function EE\Site\Utils\ini_global_value;
 use function EE\Site\Utils\ini_sets_globally;
+use function EE\Site\Utils\open_container_file;
+use function EE\Site\Utils\remove_container_file;
+use function EE\Site\Utils\rewrite_container_file;
+use function EE\Site\Utils\site_php_conf_dir;
 
 /**
  * Checks the custom.ini of every WordPress and PHP site again and turns off session.upload_progress where it is still not set globally.
@@ -175,6 +179,7 @@ class RecheckSessionUploadProgress extends Base {
 		$file     = $conf_dir . '/custom.ini';
 		$manual   = "Add 'session.upload_progress.enabled = Off' to the top of $file and run: ee site reload $site->site_url";
 
+		clearstatcache( true );
 		if ( is_link( $file ) || ( file_exists( $file ) && ! is_file( $file ) ) ) {
 			EE::warning( "Skipped disabling session.upload_progress for $site->site_url: custom.ini is not a regular file. $manual" );
 
@@ -188,11 +193,11 @@ class RecheckSessionUploadProgress extends Base {
 			return;
 		}
 
-		$dir     = self::conf_dir( $site );
+		$dir     = site_php_conf_dir( $site->site_fs_path );
 		$content = '';
 		if ( ! $created ) {
 			// Read-only first: a file that needs no change may be read-only or hard-linked.
-			$handle = self::open_ini( $file, 'r', $dir );
+			$handle = open_container_file( $file, 'r', $dir );
 			try {
 				if ( fstat( $handle )['size'] > self::MAX_SIZE ) {
 					EE::warning( "Skipped disabling session.upload_progress for $site->site_url: custom.ini is larger than " . self::MAX_SIZE . " bytes. $manual" );
@@ -226,7 +231,7 @@ class RecheckSessionUploadProgress extends Base {
 			return;
 		}
 
-		$handle = self::open_ini( $file, $created ? 'create' : 'r+', $dir );
+		$handle = open_container_file( $file, $created ? 'create' : 'r+', $dir );
 		try {
 			$stat = fstat( $handle );
 			if ( stream_get_contents( $handle ) !== $content ) {
@@ -234,7 +239,7 @@ class RecheckSessionUploadProgress extends Base {
 			}
 			$written = $this->write_ini( $site, $handle, $stat, $file, $dir, $created, $content, $new_content, $manual );
 			if ( $written && $created ) {
-				clearstatcache( true, $file );
+				clearstatcache( true );
 				$now = @lstat( $file );
 				// lchown never follows a symlink; the inode check skips anything swapped in since.
 				if ( $now && $now['ino'] === $stat['ino'] && $now['dev'] === $stat['dev'] ) {
@@ -245,7 +250,7 @@ class RecheckSessionUploadProgress extends Base {
 		} catch ( \Throwable $e ) {
 			if ( $created && ! isset( $this->changed[ $site->site_url ] ) ) {
 				try {
-					self::unlink_own( $file, $dir, $stat ?? fstat( $handle ) );
+					remove_container_file( $file, $dir, $stat ?? fstat( $handle ) );
 				} catch ( \Throwable $e2 ) {
 					EE::debug( "Could not remove $file: {$e2->getMessage()}" );
 				}
@@ -256,6 +261,14 @@ class RecheckSessionUploadProgress extends Base {
 		}
 
 		if ( ! $written ) {
+			if ( $created && ! isset( $this->changed[ $site->site_url ] ) ) {
+				try {
+					remove_container_file( $file, $dir, $stat );
+				} catch ( \Throwable $e ) {
+					EE::warning( "Could not remove $file after the failed write: {$e->getMessage()}" );
+				}
+			}
+
 			return;
 		}
 
@@ -267,7 +280,7 @@ class RecheckSessionUploadProgress extends Base {
 	}
 
 	/**
-	 * Back up and rewrite custom.ini through the handle from open_ini().
+	 * Back up and rewrite custom.ini through the handle from open_container_file().
 	 *
 	 * @param Site     $site        Site.
 	 * @param resource $handle      custom.ini handle.
@@ -309,14 +322,14 @@ class RecheckSessionUploadProgress extends Base {
 		];
 
 		try {
-			self::rewrite( $handle, $new_content );
+			rewrite_container_file( $handle, $new_content );
 		} catch ( \Exception $e ) {
 			EE::warning( "Could not disable session.upload_progress for $site->site_url: could not write custom.ini. $manual" );
 			if ( $created ) {
 				return false;
 			}
 			try {
-				self::rewrite( $handle, $content );
+				rewrite_container_file( $handle, $content );
 			} catch ( \Exception $e2 ) {
 				// Left for down() to retry from the backup.
 				$entry['written']                 = false;
@@ -359,7 +372,7 @@ class RecheckSessionUploadProgress extends Base {
 
 		try {
 			if ( null === $entry['backup'] ) {
-				self::unlink_own( $entry['file'], $entry['dir'], $entry );
+				remove_container_file( $entry['file'], $entry['dir'], $entry );
 
 				return;
 			}
@@ -368,11 +381,11 @@ class RecheckSessionUploadProgress extends Base {
 			if ( false === $content ) {
 				throw new \Exception( 'could not read the backup' );
 			}
-			$handle = self::open_ini( $entry['file'], 'r+', $entry['dir'] );
+			$handle = open_container_file( $entry['file'], 'r+', $entry['dir'] );
 			try {
 				// Skip the write when it never happened.
 				if ( stream_get_contents( $handle ) !== $content ) {
-					self::rewrite( $handle, $content );
+					rewrite_container_file( $handle, $content );
 				}
 			} finally {
 				fclose( $handle );
@@ -409,125 +422,6 @@ class RecheckSessionUploadProgress extends Base {
 			}
 		} catch ( \Throwable $e ) {
 			EE::debug( "Could not remove the empty $this->backup_root: {$e->getMessage()}" );
-		}
-	}
-
-	/**
-	 * Real path that conf.d must resolve to. config/php is EasyEngine's own link to the site's config volume; everything below it is the container's.
-	 *
-	 * @param Site $site Site.
-	 *
-	 * @return string
-	 * @throws \Exception
-	 */
-	private static function conf_dir( $site ) {
-
-		$base = realpath( $site->site_fs_path . '/config/php' );
-		if ( false === $base ) {
-			throw new \Exception( 'could not resolve config/php' );
-		}
-
-		return $base . '/php/conf.d';
-	}
-
-	/**
-	 * Opens custom.ini through one handle that every later read and write uses, so nothing swapped in at that path afterwards is followed.
-	 * The directory is mounted into the site's php container, so nothing in it is trusted: the file and every directory above it up to config/php are checked before and after opening.
-	 *
-	 * @param string $file custom.ini path.
-	 * @param string $mode 'r', 'r+', or 'create', which fails when anything, even a dangling symlink, is there.
-	 * @param string $dir  Real path conf.d must resolve to.
-	 *
-	 * @return resource
-	 * @throws \Exception When the path is not the regular file in the site's conf.d, or for writing, has other hard links.
-	 */
-	private static function open_ini( string $file, string $mode, string $dir ) {
-
-		clearstatcache();
-		if ( realpath( dirname( $file ) ) !== $dir ) {
-			throw new \Exception( 'a directory above custom.ini is a symlink' );
-		}
-
-		if ( 'create' === $mode ) {
-			// fopen() follows a dangling symlink even with 'x', so create an unguessable name and link it into place: link() neither follows nor replaces anything there.
-			$tmp    = dirname( $file ) . '/.custom.ini.ee-' . bin2hex( random_bytes( 8 ) );
-			$umask  = umask( 022 );
-			$handle = @fopen( $tmp, 'x+' );
-			umask( $umask );
-			if ( false !== $handle ) {
-				$linked = @link( $tmp, $file );
-				@unlink( $tmp );
-				if ( ! $linked ) {
-					fclose( $handle );
-					$handle = false;
-				}
-			}
-		} else {
-			$handle = @fopen( $file, $mode );
-		}
-		if ( false === $handle ) {
-			throw new \Exception( 'create' === $mode ? 'could not create custom.ini' : 'could not open custom.ini' );
-		}
-
-		// Swapped for a symlink, or a directory above it swapped, around the open.
-		$opened = fstat( $handle );
-		clearstatcache();
-		$linked = @lstat( $file );
-		$error  = null;
-		if ( ! $opened || ! $linked || $opened['dev'] !== $linked['dev'] || $opened['ino'] !== $linked['ino'] || 0100000 !== ( $linked['mode'] & 0170000 ) ) {
-			$error = 'custom.ini is not a regular file';
-		} elseif ( realpath( dirname( $file ) ) !== $dir ) {
-			$error = 'a directory above custom.ini is a symlink';
-		} elseif ( 'r' !== $mode && 1 !== $opened['nlink'] ) {
-			$error = 'custom.ini has other hard links';
-		}
-		if ( null !== $error ) {
-			if ( 'create' === $mode && $opened ) {
-				self::unlink_own( $file, $dir, $opened );
-			}
-			fclose( $handle );
-			throw new \Exception( $error );
-		}
-
-		return $handle;
-	}
-
-	/**
-	 * Remove a file this migration created, only while it is still that file in that directory.
-	 *
-	 * @param string $file custom.ini path.
-	 * @param string $dir  Real path conf.d must resolve to.
-	 * @param array  $stat Its dev and ino.
-	 *
-	 * @throws \Exception When it can't be removed.
-	 */
-	private static function unlink_own( string $file, string $dir, array $stat ) {
-
-		clearstatcache();
-		$now = @lstat( $file );
-		if ( ! $now ) {
-			return;
-		}
-		if ( $now['ino'] !== $stat['ino'] || $now['dev'] !== $stat['dev'] || realpath( dirname( $file ) ) !== $dir ) {
-			throw new \Exception( 'it was replaced, so it was left as it is' );
-		}
-		if ( ! @unlink( $file ) ) {
-			throw new \Exception( 'could not remove it' );
-		}
-	}
-
-	/**
-	 * Overwrite the file through its handle: owner, mode and inode stay (macOS bind-mounts this single file).
-	 *
-	 * @param resource $handle  Handle from open_ini().
-	 * @param string   $content New content.
-	 *
-	 * @throws \Exception When the file doesn't hold exactly $content afterwards.
-	 */
-	private static function rewrite( $handle, string $content ) {
-
-		if ( ! rewind( $handle ) || strlen( $content ) !== fwrite( $handle, $content ) || ! fflush( $handle ) || ! ftruncate( $handle, strlen( $content ) ) || ! rewind( $handle ) || stream_get_contents( $handle ) !== $content ) {
-			throw new \Exception( 'could not write custom.ini' );
 		}
 	}
 
