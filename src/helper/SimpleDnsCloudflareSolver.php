@@ -34,6 +34,11 @@ class SimpleDnsCloudflareSolver implements SolverInterface {
 	protected $zones;
 
 	/**
+	 * @var array TXT values this solver added, by record name without the trailing dot.
+	 */
+	private $created_records = [];
+
+	/**
 	 * @param DnsDataExtractor $extractor
 	 * @param OutputInterface $output
 	 */
@@ -71,6 +76,7 @@ class SimpleDnsCloudflareSolver implements SolverInterface {
 			try {
 				if ( $this->dns->addRecord( $zoneID, "TXT", $recordName, $recordValue, 0, false ) === true ) {
 					EE::log( "Created DNS record: $recordName with value $recordValue." . PHP_EOL );
+					$this->created_records[ rtrim( $recordName, '.' ) ][] = $recordValue;
 				} else {
 					$manual = true;
 				}
@@ -102,6 +108,15 @@ EOF
 				)
 			);
 		}
+	}
+
+	/**
+	 * TXT records this solver added through the Cloudflare API.
+	 *
+	 * @return array Expected values by record name.
+	 */
+	public function get_created_records() {
+		return $this->created_records;
 	}
 
 	/**

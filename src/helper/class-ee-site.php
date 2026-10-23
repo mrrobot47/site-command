@@ -1866,7 +1866,7 @@ abstract class EE_Site_Command {
 		} else {
 			if ( ! $api_key_absent && $is_solver_dns ) {
 				EE::log( 'Waiting for DNS entry propagation.' );
-				sleep( 10 );
+				\EE\Site\Utils\wait_for_dns_txt_records( $client->getPublishedDnsRecords() );
 			}
 			if ( ! $this->ssl_verify( [], [ 'force' => $force ], $www_or_non_www ) ) {
 				$this->site_data['site_ssl'] = null;
