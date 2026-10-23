@@ -1714,30 +1714,61 @@ class Site_Backup_Restore {
 			return;
 		}
 
-		$content = $created ? '' : @file_get_contents( $file );
-		if ( false === $content ) {
-			EE::warning( "Could not read the restored custom.ini to check session.upload_progress. $manual" );
+		// The directory is in the site's config volume, which its php container can change: every read and write goes through a checked handle.
+		try {
+			$dir     = \EE\Site\Utils\site_php_conf_dir( EE_ROOT_DIR . '/sites/' . $site_url );
+			$content = '';
+			if ( ! $created ) {
+				$handle = \EE\Site\Utils\open_container_file( $file, 'r', $dir );
+				try {
+					$content = stream_get_contents( $handle );
+				} finally {
+					fclose( $handle );
+				}
+				if ( false === $content ) {
+					throw new \Exception( 'could not read it' );
+				}
+			}
+
+			$new_content = \EE\Site\Utils\add_session_upload_progress_off( $content );
+			if ( null === $new_content ) {
+				return;
+			}
+
+			$handle = \EE\Site\Utils\open_container_file( $file, $created ? 'create' : 'r+', $dir );
+			try {
+				$stat = fstat( $handle );
+				if ( stream_get_contents( $handle ) !== $content ) {
+					throw new \Exception( 'it changed while it was checked' );
+				}
+				try {
+					\EE\Site\Utils\rewrite_container_file( $handle, $new_content );
+				} catch ( \Exception $e ) {
+					// A short write leaves part of the file; put the restored one back, or remove the new one.
+					if ( $created ) {
+						\EE\Site\Utils\remove_container_file( $file, $dir, $stat );
+					} else {
+						\EE\Site\Utils\rewrite_container_file( $handle, $content );
+					}
+					throw $e;
+				}
+			} finally {
+				fclose( $handle );
+			}
+		} catch ( \Exception $e ) {
+			EE::warning( "Could not turn off session.upload_progress in the restored custom.ini ({$e->getMessage()}). $manual" );
 
 			return;
 		}
 
-		$new_content = \EE\Site\Utils\add_session_upload_progress_off( $content );
-		if ( null === $new_content ) {
-			return;
-		}
-
-		// Written in place: keeps owner, mode and inode (macOS bind-mounts this single file).
-		$written = @file_put_contents( $file, $new_content );
-		clearstatcache( true, $file );
-		if ( strlen( $new_content ) !== $written ) {
-			EE::warning( "Could not turn off session.upload_progress in the restored custom.ini. $manual" );
-
-			return;
-		}
 		if ( $created ) {
-			@chmod( $file, 0644 );
-			@chown( $file, fileowner( $conf_dir ) );
-			@chgrp( $file, filegroup( $conf_dir ) );
+			// lchown never follows a symlink; the inode check skips anything swapped in since.
+			clearstatcache( true );
+			$now = @lstat( $file );
+			if ( $now && $now['ino'] === $stat['ino'] && $now['dev'] === $stat['dev'] ) {
+				@lchown( $file, fileowner( $conf_dir ) );
+				@lchgrp( $file, filegroup( $conf_dir ) );
+			}
 		}
 
 		EE::log( 'The restored custom.ini did not set session.upload_progress.enabled, so it was set to Off again. Set it to On there only if your app needs it.' );

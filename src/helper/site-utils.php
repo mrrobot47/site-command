@@ -1727,3 +1727,172 @@ function ini_global_part( string $content ) {
 
 	return $content;
 }
+
+/**
+ * Real path of a site's conf.d. config/php is EasyEngine's own link to the site's config volume; everything below it belongs to the site's php container.
+ *
+ * @param string $site_fs_path Site root.
+ *
+ * @return string
+ * @throws \Exception
+ */
+function site_php_conf_dir( string $site_fs_path ) {
+
+	$base = realpath( $site_fs_path . '/config/php' );
+	if ( false === $base ) {
+		throw new \Exception( 'could not resolve config/php' );
+	}
+
+	return $base . '/php/conf.d';
+}
+
+/**
+ * Open a file in a directory the site's php container can change, as a handle for every later read and write, so nothing swapped in at that path is followed afterwards.
+ *
+ * Host root must not write through a symlink, a hard link or a swapped directory, so the handle has to be the regular file in $dir. On Linux the kernel's own path of the open file decides; elsewhere the path is checked before and after opening.
+ *
+ * @param string $file Path.
+ * @param string $mode 'r', 'r+', or 'create', which fails when anything, even a dangling symlink, is at the path.
+ * @param string $dir  Real path of the directory the file must be in.
+ *
+ * @return resource
+ * @throws \Exception
+ */
+function open_container_file( string $file, string $mode, string $dir ) {
+
+	$name = basename( $file );
+	clearstatcache( true );
+	if ( realpath( dirname( $file ) ) !== $dir ) {
+		throw new \Exception( "a directory above $name is a symlink" );
+	}
+
+	if ( 'create' === $mode ) {
+		// fopen() follows a dangling symlink even with 'x', so create an unguessable name and link it into place: link() neither follows nor replaces anything there.
+		$tmp    = dirname( $file ) . "/.$name.ee-" . bin2hex( random_bytes( 8 ) );
+		$umask  = umask( 022 );
+		$handle = @fopen( $tmp, 'x+' );
+		umask( $umask );
+		if ( false === $handle ) {
+			throw new \Exception( "could not create $name" );
+		}
+		$created = fstat( $handle );
+		$linked  = @link( $tmp, $file );
+		@unlink( $tmp );
+		fclose( $handle );
+		if ( ! $linked ) {
+			throw new \Exception( "could not create $name" );
+		}
+
+		try {
+			$handle = open_container_file( $file, 'r+', $dir );
+			$opened = fstat( $handle );
+			if ( $opened['ino'] !== $created['ino'] || $opened['dev'] !== $created['dev'] ) {
+				fclose( $handle );
+				throw new \Exception( "$name was replaced while it was created" );
+			}
+		} catch ( \Exception $e ) {
+			try {
+				remove_container_file( $file, $dir, $created );
+			} catch ( \Exception $ignored ) {
+				// Not ours any more.
+			}
+			throw $e;
+		}
+
+		return $handle;
+	}
+
+	$handle = @fopen( $file, $mode );
+	if ( false === $handle ) {
+		throw new \Exception( "could not open $name" );
+	}
+
+	$opened = fstat( $handle );
+	clearstatcache( true );
+	$linked = @lstat( $file );
+	$real   = opened_file_path( $handle );
+	$error  = null;
+	if ( ! $opened || ! $linked || $opened['dev'] !== $linked['dev'] || $opened['ino'] !== $linked['ino'] || 0100000 !== ( $linked['mode'] & 0170000 ) ) {
+		$error = "$name is not a regular file";
+	} elseif ( realpath( dirname( $file ) ) !== $dir || ( null !== $real && "$dir/$name" !== $real ) ) {
+		$error = "a directory above $name is a symlink";
+	} elseif ( 'r' !== $mode && 1 !== $opened['nlink'] ) {
+		$error = "$name has other hard links";
+	}
+	if ( null !== $error ) {
+		fclose( $handle );
+		throw new \Exception( $error );
+	}
+
+	return $handle;
+}
+
+/**
+ * The kernel's path of an open file, from /proc/self/fd, which no later swap of a directory changes.
+ *
+ * @param resource $handle Open file.
+ *
+ * @return string|null Null without /proc (macOS); '' when the file isn't found there.
+ */
+function opened_file_path( $handle ) {
+
+	$want = fstat( $handle );
+	$fds  = $want ? @scandir( '/proc/self/fd' ) : false;
+	if ( ! $fds ) {
+		return null;
+	}
+
+	clearstatcache( true );
+	foreach ( $fds as $fd ) {
+		if ( ! preg_match( '/^\d+$/', $fd ) ) {
+			continue;
+		}
+		$stat = @stat( "/proc/self/fd/$fd" );
+		if ( $stat && $stat['dev'] === $want['dev'] && $stat['ino'] === $want['ino'] ) {
+			$path = @readlink( "/proc/self/fd/$fd" );
+
+			return false === $path ? '' : $path;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * Overwrite an open file through its handle: owner, mode and inode stay (macOS bind-mounts single config files).
+ *
+ * @param resource $handle  Handle from open_container_file().
+ * @param string   $content New content.
+ *
+ * @throws \Exception When the file doesn't hold exactly $content afterwards.
+ */
+function rewrite_container_file( $handle, string $content ) {
+
+	if ( ! rewind( $handle ) || strlen( $content ) !== fwrite( $handle, $content ) || ! fflush( $handle ) || ! ftruncate( $handle, strlen( $content ) ) || ! rewind( $handle ) || stream_get_contents( $handle ) !== $content ) {
+		throw new \Exception( 'could not write ' . basename( stream_get_meta_data( $handle )['uri'] ) );
+	}
+}
+
+/**
+ * Remove a file EasyEngine created, only while it is still that file in that directory.
+ *
+ * @param string $file Path.
+ * @param string $dir  Real path of the directory it must be in.
+ * @param array  $stat Its dev and ino.
+ *
+ * @throws \Exception When it was replaced or can't be removed.
+ */
+function remove_container_file( string $file, string $dir, array $stat ) {
+
+	clearstatcache( true );
+	$now = @lstat( $file );
+	if ( ! $now ) {
+		return;
+	}
+	if ( $now['ino'] !== $stat['ino'] || $now['dev'] !== $stat['dev'] || realpath( dirname( $file ) ) !== $dir ) {
+		throw new \Exception( basename( $file ) . ' was replaced, so it was left as it is' );
+	}
+	if ( ! @unlink( $file ) ) {
+		throw new \Exception( 'could not remove ' . basename( $file ) );
+	}
+}
