@@ -1645,7 +1645,7 @@ function add_session_upload_progress_off( string $content ) {
 		return null;
 	}
 
-	$eol   = false !== strpos( $content, "\r\n" ) ? "\r\n" : "\n";
+	$eol = false !== strpos( $content, "\r\n" ) ? "\r\n" : ( false === strpos( $content, "\n" ) && false !== strpos( $content, "\r" ) ? "\r" : "\n" );
 	$lines = '; Session upload progress is off for security; set it to On only if your app needs it.' . $eol . 'session.upload_progress.enabled = Off' . $eol;
 
 	if ( '' === trim( $content ) ) {
@@ -1667,29 +1667,21 @@ function add_session_upload_progress_off( string $content ) {
 function ini_sets_globally( string $content, string $key ) {
 
 	$global = ini_global_part( $content );
-	$ini    = @parse_ini_string( $global, true, INI_SCANNER_NORMAL );
+	// Without sections, entries of ordinary sections are global and `foo[key] = x` stays an array, so it can't match.
+	$ini = @parse_ini_string( $global, false, INI_SCANNER_NORMAL );
 	// PHP applies the lines above a syntax error, so only that part counts.
-	for ( $lines = preg_split( '/(?<=\n)/', $global ), $n = count( $lines ) - 1; false === $ini && $n > 0; $n-- ) {
-		$ini = @parse_ini_string( implode( '', array_slice( $lines, 0, $n ) ), true, INI_SCANNER_NORMAL );
-	}
-	if ( false === $ini ) {
-		return false;
+	for ( $lines = preg_split( '/(?<=\n)|(?<=\r)(?!\n)/', $global ), $n = count( $lines ) - 1; false === $ini && $n > 0; $n-- ) {
+		$ini = @parse_ini_string( implode( '', array_slice( $lines, 0, $n ) ), false, INI_SCANNER_NORMAL );
 	}
 
-	foreach ( $ini as $name => $value ) {
-		if ( is_array( $value ) ? array_key_exists( $key, $value ) : $key === $name ) {
-			return true;
-		}
-	}
-
-	return false;
+	return false !== $ini && array_key_exists( $key, $ini ) && ! is_array( $ini[ $key ] );
 }
 
 /**
  * The part of ini content before the first section whose name starts with PATH or HOST.
  *
- * PHP scopes every entry after such a header to it, even under later ordinary headers. The parser decides what a header's
- * name is, so CRLF line endings and quoted names like ["PATH=/x"] are handled the way PHP handles them.
+ * PHP scopes every entry after such a header to it, even under later ordinary headers. The parser decides where each
+ * header ends and what it is called, so any line ending, quoted names and several headers on one line are handled.
  *
  * @param string $content ini content without BOM.
  *
@@ -1697,16 +1689,21 @@ function ini_sets_globally( string $content, string $key ) {
  */
 function ini_global_part( string $content ) {
 
-	if ( ! preg_match_all( '/^[ \t]*\[/m', $content, $matches, PREG_OFFSET_CAPTURE ) ) {
-		return $content;
-	}
-
-	foreach ( $matches[0] as $match ) {
-		$eol = strpos( $content, "\n", $match[1] );
-		// Text inside a multi-line quoted value doesn't parse as the last section.
-		$ini = @parse_ini_string( false === $eol ? $content : substr( $content, 0, $eol ), true, INI_SCANNER_NORMAL );
-		if ( false !== $ini && is_array( end( $ini ) ) && preg_match( '/^(PATH|HOST)/i', (string) key( $ini ) ) ) {
-			return substr( $content, 0, $match[1] );
+	for ( $open = strpos( $content, '[' ); false !== $open; $open = strpos( $content, '[', $open + 1 ) ) {
+		// A '[' inside a quoted value (or after a syntax error, where PHP stops anyway) starts no header.
+		if ( false === @parse_ini_string( substr( $content, 0, $open ), true, INI_SCANNER_NORMAL ) ) {
+			continue;
+		}
+		// A quoted name may contain ']', so try each one until the text up to it parses.
+		for ( $close = strpos( $content, ']', $open ); false !== $close; $close = strpos( $content, ']', $close + 1 ) ) {
+			$ini = @parse_ini_string( substr( $content, 0, $close + 1 ), true, INI_SCANNER_NORMAL );
+			if ( false === $ini ) {
+				continue;
+			}
+			if ( is_array( end( $ini ) ) && preg_match( '/^(PATH|HOST)/i', (string) key( $ini ) ) ) {
+				return substr( $content, 0, $open );
+			}
+			break;
 		}
 	}
 
