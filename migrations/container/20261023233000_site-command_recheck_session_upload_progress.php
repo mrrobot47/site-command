@@ -5,12 +5,10 @@ namespace EE\Migration;
 use EE;
 use EE\Model\Site;
 use function EE\Site\Utils\add_session_upload_progress_off;
-use function EE\Site\Utils\chown_container_file;
 use function EE\Site\Utils\ini_global_value;
 use function EE\Site\Utils\ini_sets_globally;
 use function EE\Site\Utils\open_container_file;
 use function EE\Site\Utils\read_container_file;
-use function EE\Site\Utils\remove_container_file;
 use function EE\Site\Utils\rewrite_container_file;
 use function EE\Site\Utils\site_php_conf_dir;
 
@@ -33,7 +31,7 @@ class RecheckSessionUploadProgress extends Base {
 	/** @var Site[] */
 	private $sites = [];
 
-	/** @var array site_url => [ 'site' => Site, 'file' => string, 'dir' => string, 'ino' => int, 'dev' => int, 'backup' => string|null, 'written' => bool ] for every custom.ini changed by up(). */
+	/** @var array site_url => [ 'site' => Site, 'file' => string, 'dir' => string, 'backup' => string, 'written' => bool ] for every custom.ini changed by up(). */
 	private $changed = [];
 
 	/** @var array site_url => php container ID seen by up(), for running sites. */
@@ -101,8 +99,7 @@ class RecheckSessionUploadProgress extends Base {
 		if ( ! $written ) {
 			return;
 		}
-		$backed_up = array_filter( array_column( $this->changed, 'backup' ) );
-		EE::log( 'Disabled session.upload_progress in custom.ini of ' . count( $written ) . ' more site(s) where it was not set globally.' . ( $backed_up ? ' The original files are in ' . $this->backup_root : '' ) );
+		EE::log( 'Disabled session.upload_progress in custom.ini of ' . count( $written ) . ' more site(s) where it was not set globally. The original files are in ' . $this->backup_root );
 
 		// The image migration may recreate php containers, which then read the new file anyway; reload only the others, once it is done.
 		if ( method_exists( '\EE\Migration\CustomContainerMigrations', 'keep_executed_migrations' ) ) {
@@ -177,34 +174,24 @@ class RecheckSessionUploadProgress extends Base {
 	 */
 	private function update_site( $site ) {
 
-		$conf_dir = $site->site_fs_path . '/config/php/php/conf.d';
-		$file     = $conf_dir . '/custom.ini';
-		$manual   = "Add 'session.upload_progress.enabled = Off' to the top of $file and run: ee site reload $site->site_url";
+		$file   = $site->site_fs_path . '/config/php/php/conf.d/custom.ini';
+		$manual = "Add 'session.upload_progress.enabled = Off' to the top of $file and run: ee site reload $site->site_url";
 
+		// Not created when missing: PHP can't create a file safely in a directory the site's container can swap. The v4.13.3 migration created it wherever conf.d existed.
 		clearstatcache( true );
-		if ( is_link( $file ) || ( file_exists( $file ) && ! is_file( $file ) ) ) {
-			EE::warning( "Skipped disabling session.upload_progress for $site->site_url: custom.ini is not a regular file. $manual" );
+		if ( is_link( $file ) || ! is_file( $file ) ) {
+			EE::warning( "Skipped disabling session.upload_progress for $site->site_url: custom.ini is missing or not a regular file. $manual" );
 
 			return;
 		}
 
-		$created = ! file_exists( $file );
-		if ( $created && ! is_dir( $conf_dir ) ) {
-			EE::warning( "Skipped disabling session.upload_progress for $site->site_url: $conf_dir is missing. $manual" );
-
-			return;
-		}
-
-		$dir     = site_php_conf_dir( $site->site_fs_path );
-		$content = '';
-		if ( ! $created ) {
-			// Read-only first: a file that needs no change may be read-only or hard-linked.
-			$handle = open_container_file( $file, 'r', $dir );
-			try {
-				$content = read_container_file( $handle, self::MAX_SIZE );
-			} finally {
-				fclose( $handle );
-			}
+		// Read-only first: a file that needs no change may be read-only or hard-linked.
+		$dir    = site_php_conf_dir( $site->site_fs_path );
+		$handle = open_container_file( $file, 'r', $dir );
+		try {
+			$content = read_container_file( $handle, self::MAX_SIZE );
+		} finally {
+			fclose( $handle );
 		}
 
 		$new_content = add_session_upload_progress_off( $content );
@@ -225,38 +212,17 @@ class RecheckSessionUploadProgress extends Base {
 			return;
 		}
 
-		$handle = open_container_file( $file, $created ? 'create' : 'r+', $dir );
+		$handle = open_container_file( $file, 'r+', $dir );
 		try {
-			$stat = fstat( $handle );
 			if ( read_container_file( $handle, self::MAX_SIZE ) !== $content ) {
 				throw new \Exception( 'custom.ini changed while it was checked' );
 			}
-			$written = $this->write_ini( $site, $handle, $stat, $file, $dir, $created, $content, $new_content, $manual );
-			if ( $written && $created ) {
-				chown_container_file( $file, $dir, $stat );
-			}
-		} catch ( \Throwable $e ) {
-			if ( $created && ! isset( $this->changed[ $site->site_url ] ) ) {
-				try {
-					remove_container_file( $file, $dir, $stat ?? fstat( $handle ) );
-				} catch ( \Throwable $e2 ) {
-					EE::debug( "Could not remove $file: {$e2->getMessage()}" );
-				}
-			}
-			throw $e;
+			$written = $this->write_ini( $site, $handle, $file, $dir, $content, $new_content, $manual );
 		} finally {
 			fclose( $handle );
 		}
 
 		if ( ! $written ) {
-			if ( $created && ! isset( $this->changed[ $site->site_url ] ) ) {
-				try {
-					remove_container_file( $file, $dir, $stat );
-				} catch ( \Throwable $e ) {
-					EE::warning( "Could not remove $file after the failed write: {$e->getMessage()}" );
-				}
-			}
-
 			return;
 		}
 
@@ -272,39 +238,33 @@ class RecheckSessionUploadProgress extends Base {
 	 *
 	 * @param Site     $site        Site.
 	 * @param resource $handle      custom.ini handle.
-	 * @param array    $stat        fstat() of the handle.
 	 * @param string   $file        custom.ini path.
 	 * @param string   $dir         Real path of conf.d.
-	 * @param bool     $created     Whether this migration created the file.
 	 * @param string   $content     Current content.
 	 * @param string   $new_content New content.
 	 * @param string   $manual      Manual fix, for warnings.
 	 *
 	 * @return bool Whether the file now holds the new content.
 	 */
-	private function write_ini( $site, $handle, array $stat, string $file, string $dir, bool $created, string $content, string $new_content, string $manual ) {
+	private function write_ini( $site, $handle, string $file, string $dir, string $content, string $new_content, string $manual ) {
 
-		$backup = null;
-		if ( ! $created ) {
-			$backup = $this->backup_root . '/' . $site->site_url . '/custom.ini';
-			try {
-				$this->fs->mkdir( dirname( $backup ), 0700 );
-				$this->fs->dumpFile( $backup, $content );
-				$this->fs->chmod( $backup, $stat['mode'] & 0777 );
-				$this->fs->touch( $backup, $stat['mtime'] );
-			} catch ( \Throwable $e ) {
-				EE::warning( "Skipped disabling session.upload_progress for $site->site_url: could not back up custom.ini ({$e->getMessage()}). $manual" );
+		$stat   = fstat( $handle );
+		$backup = $this->backup_root . '/' . $site->site_url . '/custom.ini';
+		try {
+			$this->fs->mkdir( dirname( $backup ), 0700 );
+			$this->fs->dumpFile( $backup, $content );
+			$this->fs->chmod( $backup, $stat['mode'] & 0777 );
+			$this->fs->touch( $backup, $stat['mtime'] );
+		} catch ( \Throwable $e ) {
+			EE::warning( "Skipped disabling session.upload_progress for $site->site_url: could not back up custom.ini ({$e->getMessage()}). $manual" );
 
-				return false;
-			}
+			return false;
 		}
 
 		$entry = [
 			'site'    => $site,
 			'file'    => $file,
 			'dir'     => $dir,
-			'ino'     => $stat['ino'],
-			'dev'     => $stat['dev'],
 			'backup'  => $backup,
 			'written' => true,
 		];
@@ -313,9 +273,6 @@ class RecheckSessionUploadProgress extends Base {
 			rewrite_container_file( $handle, $new_content );
 		} catch ( \Exception $e ) {
 			EE::warning( "Could not disable session.upload_progress for $site->site_url: could not write custom.ini. $manual" );
-			if ( $created ) {
-				return false;
-			}
 			try {
 				rewrite_container_file( $handle, $content );
 			} catch ( \Exception $e2 ) {
@@ -359,12 +316,6 @@ class RecheckSessionUploadProgress extends Base {
 		unset( $this->changed[ $site_url ] );
 
 		try {
-			if ( null === $entry['backup'] ) {
-				remove_container_file( $entry['file'], $entry['dir'], $entry );
-
-				return;
-			}
-
 			$content = @file_get_contents( $entry['backup'] );
 			if ( false === $content ) {
 				throw new \Exception( 'could not read the backup' );
@@ -379,7 +330,7 @@ class RecheckSessionUploadProgress extends Base {
 				fclose( $handle );
 			}
 		} catch ( \Throwable $e ) {
-			EE::warning( "Could not restore {$entry['file']} ({$e->getMessage()}). " . ( null === $entry['backup'] ? 'The session.upload_progress migration created it.' : "Its original is {$entry['backup']}" ) );
+			EE::warning( "Could not restore {$entry['file']} ({$e->getMessage()}). Its original is {$entry['backup']}" );
 
 			return;
 		}
