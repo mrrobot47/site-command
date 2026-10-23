@@ -11,9 +11,9 @@ use function EE\Site\Utils\ini_sets_globally;
 /**
  * Checks the custom.ini of every WordPress and PHP site again and turns off session.upload_progress where it is still not set globally.
  *
- * The v4.13.3 migrations took a setting inside a [PATH=]/[HOST=] section for a global one when the section header was quoted, shared its
- * line with another header, or ended with CRLF or CR, and an array entry keyed by the directive too, so those sites kept PHP's default On.
- * A global On or Off is the user's choice and is kept. Disabled sites pick it up on their next start.
+ * The v4.13.3 migrations took a setting inside a [PATH=]/[HOST=] section for a global one when the section header was quoted, shared its line with another header, was named like an earlier key, or ended with CRLF or CR, and they counted an array entry keyed by the directive too, so those sites kept PHP's default On.
+ *
+ * A global On or Off is the user's choice and is kept. Disabled sites pick the change up on their next start.
  */
 class RecheckSessionUploadProgress extends Base {
 
@@ -88,7 +88,8 @@ class RecheckSessionUploadProgress extends Base {
 			return;
 		}
 
-		EE::log( 'Disabled session.upload_progress in custom.ini of ' . count( $this->changed ) . ' more site(s) where it was not set globally. The original files are in ' . $this->backup_root );
+		$backed_up = array_filter( array_column( $this->changed, 'backup' ) );
+		EE::log( 'Disabled session.upload_progress in custom.ini of ' . count( $this->changed ) . ' more site(s) where it was not set globally.' . ( $backed_up ? ' The original files are in ' . $this->backup_root : '' ) );
 
 		// The image migration may recreate php containers, which then read the new file anyway; reload only the others, once it is done.
 		if ( method_exists( '\EE\Migration\CustomContainerMigrations', 'keep_executed_migrations' ) ) {
@@ -143,7 +144,7 @@ class RecheckSessionUploadProgress extends Base {
 	}
 
 	/**
-	 * Whether PHP reads an ini value as true, like zend_ini_parse_bool().
+	 * Whether PHP reads an ini value as true, like zend_ini_parse_bool(), which falls back to atoi().
 	 *
 	 * @param string $value Value as the ini scanner gives it.
 	 *
@@ -151,13 +152,15 @@ class RecheckSessionUploadProgress extends Base {
 	 */
 	public static function is_on( string $value ) {
 
-		return in_array( strtolower( $value ), [ 'true', 'yes', 'on' ], true ) || 0 !== (int) $value;
+		return in_array( strtolower( $value ), [ 'true', 'yes', 'on' ], true ) || 1 === preg_match( '/^\s*[+-]?0*[1-9]/', $value );
 	}
 
 	/**
 	 * Add the setting to one site's custom.ini. Problems with one site are warnings, so they don't block the upgrade.
 	 *
 	 * @param Site $site Site to check.
+	 *
+	 * @throws \Exception
 	 */
 	private function update_site( $site ) {
 
@@ -178,11 +181,49 @@ class RecheckSessionUploadProgress extends Base {
 			return;
 		}
 
-		$content = $created ? '' : @file_get_contents( $file );
-		if ( false === $content ) {
-			EE::warning( "Skipped disabling session.upload_progress for $site->site_url: could not read custom.ini. $manual" );
+		$handle = self::open_ini( $file, $created );
+		try {
+			$this->update_open_file( $site, $handle, $file, $created, $manual );
+		} finally {
+			fclose( $handle );
+		}
 
+		if ( $created && ! isset( $this->changed[ $site->site_url ] ) ) {
+			@unlink( $file );
+		}
+		if ( ! isset( $this->changed[ $site->site_url ] ) ) {
 			return;
+		}
+
+		if ( $created ) {
+			// lchown: never follows a symlink swapped in by the container.
+			@lchown( $file, fileowner( $conf_dir ) );
+			@lchgrp( $file, filegroup( $conf_dir ) );
+		}
+
+		$id = $site->site_enabled ? $this->get_php_container( $site ) : '';
+		if ( null !== $id && '' !== $id ) {
+			$this->containers[ $site->site_url ] = $id;
+		}
+		EE::debug( "$site->site_url: disabled session.upload_progress in custom.ini." );
+	}
+
+	/**
+	 * Read, back up and rewrite custom.ini, all through the handle from open_ini().
+	 *
+	 * @param Site     $site    Site.
+	 * @param resource $handle  custom.ini handle.
+	 * @param string   $file    custom.ini path.
+	 * @param bool     $created Whether this migration created the file.
+	 * @param string   $manual  Manual fix, for warnings.
+	 *
+	 * @throws \Exception
+	 */
+	private function update_open_file( $site, $handle, string $file, bool $created, string $manual ) {
+
+		$content = stream_get_contents( $handle );
+		if ( false === $content ) {
+			throw new \Exception( 'could not read it' );
 		}
 
 		$new_content = add_session_upload_progress_off( $content );
@@ -206,11 +247,12 @@ class RecheckSessionUploadProgress extends Base {
 		$backup = null;
 		if ( ! $created ) {
 			$backup = $this->backup_root . '/' . $site->site_url . '/custom.ini';
+			$stat   = fstat( $handle );
 			try {
 				$this->fs->mkdir( dirname( $backup ), 0700 );
-				$this->fs->copy( $file, $backup, true );
-				$this->fs->chmod( $backup, fileperms( $file ) & 0777 );
-				$this->fs->touch( $backup, filemtime( $file ) );
+				$this->fs->dumpFile( $backup, $content );
+				$this->fs->chmod( $backup, $stat['mode'] & 0777 );
+				$this->fs->touch( $backup, $stat['mtime'] );
 			} catch ( \Throwable $e ) {
 				EE::warning( "Skipped disabling session.upload_progress for $site->site_url: could not back up custom.ini ({$e->getMessage()}). $manual" );
 
@@ -218,29 +260,31 @@ class RecheckSessionUploadProgress extends Base {
 			}
 		}
 
+		try {
+			self::rewrite( $handle, $new_content );
+		} catch ( \Exception $e ) {
+			$restored = $created;
+			if ( ! $created ) {
+				try {
+					self::rewrite( $handle, $content );
+					$restored = true;
+					$this->fs->remove( dirname( $backup ) );
+				} catch ( \Throwable $e2 ) {
+					EE::warning( "Could not restore $file; its original is $backup" );
+				}
+			}
+			EE::warning( "Could not disable session.upload_progress for $site->site_url: could not write custom.ini. $manual" );
+			if ( $restored ) {
+				return;
+			}
+		}
+
+		// Recorded only now, so a failed write that was undone above leaves nothing for down().
 		$this->changed[ $site->site_url ] = [
 			'site'   => $site,
 			'file'   => $file,
 			'backup' => $backup,
 		];
-
-		// Written in place: keeps owner, mode and inode (macOS bind-mounts this single file).
-		if ( ! $this->write_in_place( $file, $new_content ) ) {
-			$this->restore_file( $site->site_url );
-			EE::warning( "Could not disable session.upload_progress for $site->site_url: could not write custom.ini. $manual" );
-
-			return;
-		}
-
-		if ( $created ) {
-			$this->match_owner( $file, $conf_dir );
-		}
-
-		$id = $site->site_enabled ? $this->get_php_container( $site ) : '';
-		if ( null !== $id && '' !== $id ) {
-			$this->containers[ $site->site_url ] = $id;
-		}
-		EE::debug( "$site->site_url: disabled session.upload_progress in custom.ini." );
 	}
 
 	/**
@@ -256,7 +300,7 @@ class RecheckSessionUploadProgress extends Base {
 	}
 
 	/**
-	 * Restore one file changed by up(); its backup is removed once restored.
+	 * Restore one file changed by up(); its backup is removed once restored. Never throws.
 	 *
 	 * @param string $site_url Site.
 	 */
@@ -265,57 +309,104 @@ class RecheckSessionUploadProgress extends Base {
 		$entry = $this->changed[ $site_url ];
 		unset( $this->changed[ $site_url ] );
 
-		if ( null === $entry['backup'] ) {
-			if ( ! @unlink( $entry['file'] ) && file_exists( $entry['file'] ) ) {
-				EE::warning( "Could not remove {$entry['file']} added by the session.upload_progress migration." );
+		try {
+			if ( null === $entry['backup'] ) {
+				if ( ! @unlink( $entry['file'] ) && file_exists( $entry['file'] ) ) {
+					throw new \Exception( 'could not remove it' );
+				}
+
+				return;
 			}
 
-			return;
+			$content = @file_get_contents( $entry['backup'] );
+			if ( false === $content ) {
+				throw new \Exception( 'could not read the backup' );
+			}
+			$handle = self::open_ini( $entry['file'], false );
+			try {
+				// Skip the write when it never happened.
+				if ( stream_get_contents( $handle ) !== $content ) {
+					self::rewrite( $handle, $content );
+				}
+			} finally {
+				fclose( $handle );
+			}
+			$this->fs->remove( dirname( $entry['backup'] ) );
+			EE::debug( "$site_url: restored custom.ini." );
+		} catch ( \Throwable $e ) {
+			EE::warning( "Could not restore {$entry['file']} ({$e->getMessage()}). " . ( null === $entry['backup'] ? 'The session.upload_progress migration created it.' : "Its original is {$entry['backup']}" ) );
 		}
-
-		$content = @file_get_contents( $entry['backup'] );
-		// Skip the write when it never happened, e.g. on an immutable file.
-		if ( false === $content || ( @file_get_contents( $entry['file'] ) !== $content && ! $this->write_in_place( $entry['file'], $content ) ) ) {
-			EE::warning( "Could not restore {$entry['file']}; its original is {$entry['backup']}" );
-
-			return;
-		}
-		$this->fs->remove( dirname( $entry['backup'] ) );
-		EE::debug( "$site_url: restored custom.ini." );
 	}
 
 	private function remove_empty_backup_root() {
 
-		if ( ! empty( $this->backup_root ) && is_dir( $this->backup_root ) && ! ( new \FilesystemIterator( $this->backup_root ) )->valid() ) {
-			$this->fs->remove( $this->backup_root );
+		try {
+			if ( ! empty( $this->backup_root ) && is_dir( $this->backup_root ) && ! ( new \FilesystemIterator( $this->backup_root ) )->valid() ) {
+				$this->fs->remove( $this->backup_root );
+			}
+		} catch ( \Throwable $e ) {
+			EE::debug( "Could not remove the empty $this->backup_root: {$e->getMessage()}" );
 		}
 	}
 
 	/**
-	 * @param string $file    File to overwrite without replacing it.
-	 * @param string $content New content.
+	 * Opens custom.ini through one handle that every later read and write uses, so nothing swapped in at that path afterwards is followed.
+	 * The directory is mounted into the site's php container, so nothing in it is trusted.
 	 *
-	 * @return bool Whether the file now holds exactly $content.
+	 * @param string $file   custom.ini path.
+	 * @param bool   $create Create it; fails when anything, even a dangling symlink, is there.
+	 *
+	 * @return resource
+	 * @throws \Exception When the path is not a regular, singly linked file.
 	 */
-	private function write_in_place( string $file, string $content ) {
+	private static function open_ini( string $file, bool $create ) {
 
-		$written = @file_put_contents( $file, $content );
+		if ( $create ) {
+			// fopen() follows a dangling symlink even with 'x', so create an unguessable name and link it into place: link() neither follows nor replaces anything there.
+			$tmp    = dirname( $file ) . '/.custom.ini.ee-' . bin2hex( random_bytes( 8 ) );
+			$umask  = umask( 022 );
+			$handle = @fopen( $tmp, 'x+' );
+			umask( $umask );
+			if ( false !== $handle ) {
+				$linked = @link( $tmp, $file );
+				@unlink( $tmp );
+				if ( ! $linked ) {
+					fclose( $handle );
+					$handle = false;
+				}
+			}
+		} else {
+			$handle = @fopen( $file, 'r+' );
+		}
+		if ( false === $handle ) {
+			throw new \Exception( $create ? 'could not create custom.ini' : 'could not open custom.ini' );
+		}
+
+		// Swapped for a symlink around the open, or a hard link to another file.
+		$opened = fstat( $handle );
 		clearstatcache( true, $file );
+		$linked = @lstat( $file );
+		if ( ! $opened || ! $linked || $opened['dev'] !== $linked['dev'] || $opened['ino'] !== $linked['ino'] || 0100000 !== ( $linked['mode'] & 0170000 ) || 1 !== $opened['nlink'] ) {
+			fclose( $handle );
+			throw new \Exception( 'custom.ini is not a regular file' );
+		}
 
-		return strlen( $content ) === $written && @file_get_contents( $file ) === $content;
+		return $handle;
 	}
 
 	/**
-	 * Give a new file the owner and group of its directory.
+	 * Overwrite the file through its handle: owner, mode and inode stay (macOS bind-mounts this single file).
 	 *
-	 * @param string $file File.
-	 * @param string $dir  Directory.
+	 * @param resource $handle  Handle from open_ini().
+	 * @param string   $content New content.
+	 *
+	 * @throws \Exception When the file doesn't hold exactly $content afterwards.
 	 */
-	private function match_owner( string $file, string $dir ) {
+	private static function rewrite( $handle, string $content ) {
 
-		@chmod( $file, 0644 );
-		@chown( $file, fileowner( $dir ) );
-		@chgrp( $file, filegroup( $dir ) );
+		if ( ! rewind( $handle ) || strlen( $content ) !== fwrite( $handle, $content ) || ! fflush( $handle ) || ! ftruncate( $handle, strlen( $content ) ) || ! rewind( $handle ) || stream_get_contents( $handle ) !== $content ) {
+			throw new \Exception( 'could not write custom.ini' );
+		}
 	}
 
 	/**
