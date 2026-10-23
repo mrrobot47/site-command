@@ -5,9 +5,11 @@ namespace EE\Migration;
 use EE;
 use EE\Model\Site;
 use function EE\Site\Utils\add_session_upload_progress_off;
+use function EE\Site\Utils\chown_container_file;
 use function EE\Site\Utils\ini_global_value;
 use function EE\Site\Utils\ini_sets_globally;
 use function EE\Site\Utils\open_container_file;
+use function EE\Site\Utils\read_container_file;
 use function EE\Site\Utils\remove_container_file;
 use function EE\Site\Utils\rewrite_container_file;
 use function EE\Site\Utils\site_php_conf_dir;
@@ -25,7 +27,7 @@ class RecheckSessionUploadProgress extends Base {
 
 	const DIRECTIVE = 'session.upload_progress.enabled';
 
-	/** Larger files are skipped: the check re-parses the text before every '[', and the file is the container's to fill. */
+	/** Larger files are skipped with a warning: the check re-parses the text before every '[', and the file is the container's to fill. */
 	const MAX_SIZE = 65536;
 
 	/** @var Site[] */
@@ -199,17 +201,9 @@ class RecheckSessionUploadProgress extends Base {
 			// Read-only first: a file that needs no change may be read-only or hard-linked.
 			$handle = open_container_file( $file, 'r', $dir );
 			try {
-				if ( fstat( $handle )['size'] > self::MAX_SIZE ) {
-					EE::warning( "Skipped disabling session.upload_progress for $site->site_url: custom.ini is larger than " . self::MAX_SIZE . " bytes. $manual" );
-
-					return;
-				}
-				$content = stream_get_contents( $handle );
+				$content = read_container_file( $handle, self::MAX_SIZE );
 			} finally {
 				fclose( $handle );
-			}
-			if ( false === $content ) {
-				throw new \Exception( 'could not read custom.ini' );
 			}
 		}
 
@@ -234,18 +228,12 @@ class RecheckSessionUploadProgress extends Base {
 		$handle = open_container_file( $file, $created ? 'create' : 'r+', $dir );
 		try {
 			$stat = fstat( $handle );
-			if ( stream_get_contents( $handle ) !== $content ) {
+			if ( read_container_file( $handle, self::MAX_SIZE ) !== $content ) {
 				throw new \Exception( 'custom.ini changed while it was checked' );
 			}
 			$written = $this->write_ini( $site, $handle, $stat, $file, $dir, $created, $content, $new_content, $manual );
 			if ( $written && $created ) {
-				clearstatcache( true );
-				$now = @lstat( $file );
-				// lchown never follows a symlink; the inode check skips anything swapped in since.
-				if ( $now && $now['ino'] === $stat['ino'] && $now['dev'] === $stat['dev'] ) {
-					@lchown( $file, fileowner( $conf_dir ) );
-					@lchgrp( $file, filegroup( $conf_dir ) );
-				}
+				chown_container_file( $file, $dir, $stat );
 			}
 		} catch ( \Throwable $e ) {
 			if ( $created && ! isset( $this->changed[ $site->site_url ] ) ) {
@@ -383,8 +371,8 @@ class RecheckSessionUploadProgress extends Base {
 			}
 			$handle = open_container_file( $entry['file'], 'r+', $entry['dir'] );
 			try {
-				// Skip the write when it never happened.
-				if ( stream_get_contents( $handle ) !== $content ) {
+				// Skip the write when it never happened; read no more than needed to tell.
+				if ( stream_get_contents( $handle, strlen( $content ) + 1 ) !== $content ) {
 					rewrite_container_file( $handle, $content );
 				}
 			} finally {
