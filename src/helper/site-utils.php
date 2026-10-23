@@ -1689,23 +1689,22 @@ function ini_sets_globally( string $content, string $key ) {
  */
 function ini_global_part( string $content ) {
 
+	$probe = '__ee_ini_probe_' . md5( $content );
 	for ( $open = strpos( $content, '[' ); false !== $open; $open = strpos( $content, '[', $open + 1 ) ) {
-		// A '[' inside a quoted value (or after a syntax error, where PHP stops anyway) starts no header.
-		$before = @parse_ini_string( substr( $content, 0, $open ), true, INI_SCANNER_NORMAL );
-		if ( false === $before ) {
+		// Only where the parser expects a new entry can '[' start a header: not in a quoted value, a comment or a value.
+		$probed = @parse_ini_string( substr( $content, 0, $open ) . $probe . ' = 1', true, INI_SCANNER_NORMAL );
+		if ( false === $probed || ! array_key_exists( $probe, $probed ) && ! array_filter( $probed, function ( $entry ) use ( $probe ) {
+			return is_array( $entry ) && array_key_exists( $probe, $entry );
+		} ) ) {
 			continue;
 		}
 		// A quoted name may contain ']', so try each one until the text up to it parses.
 		for ( $close = strpos( $content, ']', $open ); false !== $close; $close = strpos( $content, ']', $close + 1 ) ) {
-			$ini = @parse_ini_string( substr( $content, 0, $close + 1 ), true, INI_SCANNER_NORMAL );
-			if ( false === $ini ) {
+			if ( false === @parse_ini_string( substr( $content, 0, $close + 1 ), true, INI_SCANNER_NORMAL ) ) {
 				continue;
 			}
-			// Named from the header alone: a section replacing an earlier key of the same name keeps that key's position.
 			$header = @parse_ini_string( substr( $content, $open, $close - $open + 1 ), true, INI_SCANNER_NORMAL );
-			$name   = is_array( $header ) && 1 === count( $header ) ? (string) key( $header ) : '';
-			// In a comment the text parses as a header alone but adds no section.
-			if ( preg_match( '/^(PATH|HOST)/i', $name ) && is_array( $ini[ $name ] ?? null ) && ! is_array( $before[ $name ] ?? null ) ) {
+			if ( is_array( $header ) && 1 === count( $header ) && preg_match( '/^(PATH|HOST)/i', (string) key( $header ) ) ) {
 				return substr( $content, 0, $open );
 			}
 			break;
