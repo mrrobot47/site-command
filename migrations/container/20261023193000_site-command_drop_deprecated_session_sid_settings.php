@@ -239,7 +239,7 @@ class DropDeprecatedSessionSidSettings extends Base {
 
 	/**
 	 * Opens php.ini for rewriting in place, so no other path is created, followed or re-resolved.
-	 * The site's php container can write to this directory (www-data owns it after a PHP switch).
+	 * The directory is mounted into the site's php container, so nothing in it is trusted.
 	 *
 	 * @param string $file php.ini path.
 	 *
