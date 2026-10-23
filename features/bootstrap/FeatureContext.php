@@ -992,6 +992,9 @@ class FeatureContext implements Context
 	{
 		$site    = $this->v( $site );
 		$run     = EE::launch( 'docker volume ls -q --filter label=org.label-schema.vendor=EasyEngine --filter ' . escapeshellarg( 'label=io.easyengine.site=' . $site ), false, true );
+		if ( 0 !== $run->return_code ) {
+			throw new Exception( "Could not list site volumes.\n" . $this->describe( $run ) );
+		}
 		$volumes = array_filter( explode( "\n", trim( $run->stdout ) ) );
 		if ( (int) $count !== count( $volumes ) ) {
 			throw new Exception( "Expected $count volumes for $site, found " . count( $volumes ) . ': ' . implode( ', ', $volumes ) );
@@ -1004,8 +1007,13 @@ class FeatureContext implements Context
 	public function theDockerObjectShouldExist( $type, $name, $not = '' )
 	{
 		$name = $this->v( $name );
-		$run  = EE::launch( sprintf( 'docker %s inspect %s', $type, escapeshellarg( $name ) ), false, true );
-		if ( ( 0 === $run->return_code ) === (bool) $not ) {
+		$format = 'container' === $type ? '{{.Names}}' : '{{.Name}}';
+		$run    = EE::launch( 'docker ' . $type . ' ls' . ( 'container' === $type ? ' -a' : '' ) . ' --format ' . escapeshellarg( $format ), false, true );
+		if ( 0 !== $run->return_code ) {
+			throw new Exception( "Could not list Docker $type objects.\n" . $this->describe( $run ) );
+		}
+		$exists = in_array( $name, explode( "\n", trim( $run->stdout ) ), true );
+		if ( $exists === (bool) $not ) {
 			throw new Exception( "Expected docker $type $name {$not}to exist.\n" . $this->describe( $run ) );
 		}
 	}
@@ -1034,6 +1042,9 @@ class FeatureContext implements Context
 			throw new Exception( "No running $service container for $site." );
 		}
 		$run   = EE::launch( "docker inspect -f '{{json .Config.Env}}' " . $ids[0], false, true );
+		if ( 0 !== $run->return_code ) {
+			throw new Exception( "Could not inspect the $service container of $site.\n" . $this->describe( $run ) );
+		}
 		$env   = json_decode( trim( $run->stdout ), true ) ?: [];
 		$found = false;
 		foreach ( $env as $line ) {
@@ -1109,7 +1120,7 @@ class FeatureContext implements Context
 	public function theResponseCodeShouldBe( $not, $code )
 	{
 		$response = $this->last_response();
-		if ( ( (int) $code === $response['code'] ) === (bool) $not ) {
+		if ( ( $not && $this->no_http_response( $response ) ) || ( (int) $code === $response['code'] ) === (bool) $not ) {
 			throw new Exception( "Expected HTTP {$not}$code, got {$response['code']}.\n" . $this->describe_response( $response ) );
 		}
 	}
@@ -1121,6 +1132,9 @@ class FeatureContext implements Context
 	{
 		$response = $this->last_response();
 		$text     = $this->v( $text );
+		if ( $not && $this->no_http_response( $response ) ) {
+			throw new Exception( "No HTTP response to check.\n" . $this->describe_response( $response ) );
+		}
 		if ( ( false !== strpos( $response['body'], $text ) ) === (bool) $not ) {
 			throw new Exception( "Expected the response body {$not}to contain $text.\n" . $this->describe_response( $response ) );
 		}
@@ -1136,6 +1150,9 @@ class FeatureContext implements Context
 		$name     = strtolower( $header );
 		$actual   = isset( $response['headers'][ $name ] ) ? $response['headers'][ $name ] : null;
 		$matches  = null !== $actual && ( 'be' === $mode ? $actual === $value : false !== strpos( $actual, $value ) );
+		if ( $not && $this->no_http_response( $response ) ) {
+			throw new Exception( "No HTTP response to check.\n" . $this->describe_response( $response ) );
+		}
 		if ( $matches === (bool) $not ) {
 			throw new Exception( "Expected header $header {$not}to $mode $value.\n" . $this->describe_response( $response ) );
 		}
@@ -1147,6 +1164,9 @@ class FeatureContext implements Context
 	public function theResponseShouldHaveTheHeader( $not, $header )
 	{
 		$response = $this->last_response();
+		if ( $not && $this->no_http_response( $response ) ) {
+			throw new Exception( "No HTTP response to check.\n" . $this->describe_response( $response ) );
+		}
 		if ( isset( $response['headers'][ strtolower( $header ) ] ) === (bool) $not ) {
 			throw new Exception( "Expected the response {$not}to have the header $header.\n" . $this->describe_response( $response ) );
 		}
@@ -1174,7 +1194,8 @@ class FeatureContext implements Context
 		$deadline = time() + (int) $seconds;
 		do {
 			$this->response = $this->http_request( $url, 'GET' );
-			if ( ( (int) $code === $this->response['code'] ) !== (bool) $not ) {
+			// A transport error doesn't prove "not N"; keep polling.
+			if ( ( ! $not || ! $this->no_http_response( $this->response ) ) && ( (int) $code === $this->response['code'] ) !== (bool) $not ) {
 				return;
 			}
 			sleep( 1 );
@@ -1569,6 +1590,9 @@ class FeatureContext implements Context
 			$command .= ' --filter ' . escapeshellarg( 'label=com.docker.compose.service=' . $service );
 		}
 		$run = EE::launch( $command, false, true );
+		if ( 0 !== $run->return_code ) {
+			throw new Exception( "Could not list site containers.\n" . $this->describe( $run ) );
+		}
 
 		return array_values( array_filter( explode( "\n", trim( $run->stdout ) ) ) );
 	}
@@ -1793,6 +1817,12 @@ class FeatureContext implements Context
 		}
 
 		return $this->response;
+	}
+
+	// Negative HTTP checks pass only on a real response.
+	private function no_http_response( $response )
+	{
+		return 0 === $response['code'] || '' !== $response['error'];
 	}
 
 	private function describe_response( $response )
