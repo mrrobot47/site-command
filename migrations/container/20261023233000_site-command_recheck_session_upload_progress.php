@@ -85,7 +85,7 @@ class RecheckSessionUploadProgress extends Base {
 					$this->restore_file( $site->site_url );
 				}
 				unset( $this->containers[ $site->site_url ] );
-				EE::warning( "Could not check session.upload_progress in the custom.ini of $site->site_url: {$e->getMessage()}" );
+				EE::warning( "Could not check session.upload_progress in the custom.ini of $site->site_url: {$e->getMessage()}. " . self::manual_fix( $site ) );
 			}
 		}
 
@@ -166,6 +166,16 @@ class RecheckSessionUploadProgress extends Base {
 	}
 
 	/**
+	 * @param Site $site Site.
+	 *
+	 * @return string The manual fix, for warnings.
+	 */
+	private static function manual_fix( $site ) {
+
+		return "Add 'session.upload_progress.enabled = Off' to the top of $site->site_fs_path/config/php/php/conf.d/custom.ini and run: ee site reload $site->site_url";
+	}
+
+	/**
 	 * Add the setting to one site's custom.ini. Problems with one site are warnings, so they don't block the upgrade.
 	 *
 	 * @param Site $site Site to check.
@@ -175,7 +185,7 @@ class RecheckSessionUploadProgress extends Base {
 	private function update_site( $site ) {
 
 		$file   = $site->site_fs_path . '/config/php/php/conf.d/custom.ini';
-		$manual = "Add 'session.upload_progress.enabled = Off' to the top of $file and run: ee site reload $site->site_url";
+		$manual = self::manual_fix( $site );
 
 		// Not created when missing: PHP can't create a file safely in a directory the site's container can swap. The v4.13.3 migration created it wherever conf.d existed.
 		clearstatcache( true );
