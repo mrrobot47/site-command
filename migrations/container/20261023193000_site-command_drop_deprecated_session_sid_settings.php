@@ -190,7 +190,8 @@ class DropDeprecatedSessionSidSettings extends Base {
 	 */
 	public static function strip_settings( $content ) {
 
-		$lines = preg_split( '/(?<=\n)/', $content, -1, PREG_SPLIT_NO_EMPTY );
+		// After every LF, and after a CR not followed by LF, so a CR-only file isn't read as one line.
+		$lines = preg_split( '/(?<=\n)|(?<=\r)(?!\n)/', $content, -1, PREG_SPLIT_NO_EMPTY );
 		$norm  = array_map(
 			function ( $line ) {
 				return rtrim( $line, " \t\r\n" );
