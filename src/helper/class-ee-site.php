@@ -934,17 +934,19 @@ abstract class EE_Site_Command {
 			$array_data                   = ( array ) $this->site_data;
 			$this->site_data              = reset( $array_data );
 
-			EE::log( 'Taking backup of old php config.' );
 			$site_backup_dir     = $this->site_data['site_fs_path'] . '/.backup';
 			$php_conf_backup_dir = $site_backup_dir . '/config/php-' . $old_php_version;
 			$php_conf_dir        = $this->site_data['site_fs_path'] . '/config/php';
 			$php_confd_dir       = $this->site_data['site_fs_path'] . '/config/php/php/conf.d';
+
+			// The php container can swap anything in its config volume for a symlink, so it stays stopped until the volume is replaced.
+			$php_stopped = $this->stop_php_for_config_change( $php_conf_dir );
+
+			EE::log( 'Taking backup of old php config.' );
+			// A fresh copy, so nothing is written through a symlink an older backup holds.
+			$this->fs->remove( $php_conf_backup_dir );
 			$this->fs->mkdir( $php_conf_backup_dir );
 			$this->fs->mirror( $php_conf_dir, $php_conf_backup_dir );
-
-			$this->dump_docker_compose_yml( [ 'nohttps' => $no_https ] );
-			EE::log( 'Starting site with new PHP version: ' . $php_version . '. This may take sometime.' );
-			$this->enable( $args, [ 'force' => true ] );
 
 			EE::log( 'Updating php config.' );
 			$temp_dir     = EE\Utils\get_temp_dir();
@@ -978,13 +980,62 @@ abstract class EE_Site_Command {
 
 			EE::exec( "chown -R www-data: $php_conf_dir" );
 
+			$this->dump_docker_compose_yml( [ 'nohttps' => $no_https ] );
+			EE::log( 'Starting site with new PHP version: ' . $php_version . '. This may take sometime.' );
+			$php_stopped = false;
+			$this->enable( $args, [ 'force' => true ] );
+
 		} catch ( \Exception $e ) {
+			if ( ! empty( $php_stopped ) && ( ! chdir( $this->site_data['site_fs_path'] ) || ! EE::exec( \EE_DOCKER::docker_compose_with_custom() . ' start php' ) ) ) {
+				EE::warning( 'Could not start the php container again. Run: ee site enable ' . $this->site_data['site_url'] . ' --force' );
+			}
 			EE::error( $e->getMessage() );
 		}
 		$site->save();
 		$this->restart( $args, [ 'php' => true ] );
 		EE::success( 'Updated site ' . $this->site_data['site_url'] . ' to PHP version: ' . $php_version );
 		delem_log( 'site php version update end' );
+	}
+
+	/**
+	 * Stop the site's php container, the only one that mounts its config volume, and check the volume holds only directories and regular files.
+	 *
+	 * @param string $php_conf_dir The site's config/php.
+	 *
+	 * @return bool Whether a running container was stopped.
+	 * @throws \Exception When it can't be stopped, another running container mounts the volume, or the volume holds anything else.
+	 */
+	private function stop_php_for_config_change( $php_conf_dir ) {
+
+		chdir( $this->site_data['site_fs_path'] );
+		$compose = \EE_DOCKER::docker_compose_with_custom();
+		$id      = trim( EE::launch( "$compose ps -q php" )->stdout );
+		$running = '' !== $id && 'running' === \EE_DOCKER::container_status( $id );
+		if ( $running && ! EE::exec( "$compose stop php" ) ) {
+			throw new \Exception( 'Could not stop the php container to update its config.' );
+		}
+
+		try {
+			$volume = realpath( $php_conf_dir );
+			if ( false === $volume ) {
+				throw new \Exception( "Could not resolve $php_conf_dir." );
+			}
+			// On Linux config/php links to the volume's _data; a custom compose file may mount it elsewhere too.
+			if ( '_data' === basename( $volume ) ) {
+				$users = EE::launch( 'docker ps -q --filter ' . escapeshellarg( 'volume=' . basename( dirname( $volume ) ) ) );
+				if ( $users->return_code || '' !== trim( $users->stdout ) ) {
+					throw new \Exception( 'The php config volume is still mounted by a running container (' . implode( ', ', preg_split( '/\s+/', trim( $users->stdout ) ) ) . '); stop it and re-run the update.' );
+				}
+			}
+			\EE\Site\Utils\check_plain_tree( $volume );
+		} catch ( \Exception $e ) {
+			if ( $running ) {
+				EE::exec( "$compose start php" );
+			}
+			throw new \Exception( 'Could not update the php config: ' . rtrim( $e->getMessage(), '.' ) . '. Nothing was changed.' );
+		}
+
+		return $running;
 	}
 
 	protected function sendmail_path_update( $msmtp ) {
@@ -1242,7 +1293,12 @@ abstract class EE_Site_Command {
 		# Required when newrelic is enabled on site. Newrelic ini is updated via docker-entrypoint.
 		$php_confd_dir = $this->site_data->site_fs_path . '/config/php/php/conf.d';
 		if ( $this->fs->exists( $php_confd_dir ) ) {
-			$this->fs->chown( $php_confd_dir, 'www-data', true );
+			// The php container may be running and can swap anything in conf.d, so no symlink is followed.
+			try {
+				\EE\Site\Utils\chown_container_tree( \EE\Site\Utils\site_php_conf_dir( $this->site_data->site_fs_path ), 'www-data' );
+			} catch ( \Exception $e ) {
+				\EE::warning( sprintf( 'Could not give www-data the php conf.d of %s: %s', $this->site_data->site_url, $e->getMessage() ) );
+			}
 		}
 
 		if ( \EE_DOCKER::docker_compose_up( $this->site_data->site_fs_path, $containers_to_start ) ) {
