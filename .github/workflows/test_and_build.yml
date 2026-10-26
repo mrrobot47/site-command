@@ -12,6 +12,8 @@ jobs:
   test: #----------------------------------------------------------------------
     runs-on: ubuntu-latest
     name: Behat Tests - PHP ${{ matrix.php }}
+    env:
+      RCLONE_CONFIG: /etc/rclone/rclone.conf
     strategy:
       fail-fast: false
       matrix:
@@ -60,12 +62,10 @@ jobs:
     - name: Set up rclone for backup and restore
       run: |
         sudo apt-get update -q
-        sudo apt-get install -y -q rclone p7zip-full rsync unzip
+        sudo apt-get install -y -q rclone
         sudo mkdir -p "$(dirname "$RCLONE_CONFIG")" /var/tmp/ee-backups
         # EasyEngine's default rclone-path is easyengine:easyengine.
         printf '[easyengine]\ntype = alias\nremote = /var/tmp/ee-backups\n' | sudo tee "$RCLONE_CONFIG" >/dev/null
-      env:
-        RCLONE_CONFIG: /etc/rclone/rclone.conf
 
     - name: Install dependencies
       run: |
@@ -96,7 +96,6 @@ jobs:
         sudo -E ./vendor/bin/behat
       env:
         COMPOSE_INTERACTIVE_NO_CLI: 1
-        RCLONE_CONFIG: /etc/rclone/rclone.conf
 
     - name: Output logs
       if: ${{ always() }}

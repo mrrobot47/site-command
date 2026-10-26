@@ -1,6 +1,7 @@
 @remote @destructive
 Feature: Session upload progress stays off
   Re-runs the upgrade migrations on the host (destructive) and backs up to the rclone remote from config.yml.
+  Those steps run only on CI or with EE_BEHAT_DESTRUCTIVE=1.
 
   # "STDOUT should return exactly" checks a scenario's first command, so each check is its own scenario.
   # The scenarios share their sites and run in order.
@@ -39,7 +40,7 @@ Feature: Session upload progress stays off
     """
 
   Scenario: Upgrade
-    When I run 'bash features/upload-progress.sh reset && bin/ee cli info'
+    When I run 'bash features/upload-progress.sh upgrade'
     Then return value should be 0
     And STDERR should return something like
     """
@@ -82,12 +83,12 @@ Feature: Session upload progress stays off
     """
 
   Scenario: Run the migration again
-    When I run 'bash features/upload-progress.sh save bh-site-command-upload-crlf.test'
-    And I run 'bash features/upload-progress.sh reset'
-    And I run 'bin/ee cli info'
-    Then return value of command 1 should be 0
-    And return value of command 2 should be 0
-    And return value of command 3 should be 0
+    When I run 'bash features/upload-progress.sh save bh-site-command-upload-crlf.test && bash features/upload-progress.sh upgrade'
+    Then return value should be 0
+    And STDERR should return something like
+    """
+    Skipped disabling session.upload_progress for bh-site-command-upload-missing.test: custom.ini is missing or not a regular file.
+    """
 
   Scenario: A second run changes nothing
     When I run 'bash features/upload-progress.sh same bh-site-command-upload-crlf.test'
@@ -101,13 +102,15 @@ Feature: Session upload progress stays off
     And I run 'bash features/upload-progress.sh strip bh-site-command-upload-restore.test'
     And I run 'bash features/upload-progress.sh probe bh-site-command-upload-restore.test'
     And I run 'bin/ee site reload bh-site-command-upload-restore.test'
-    And I run 'bin/ee site backup bh-site-command-upload-restore.test'
+    And I run 'bash features/upload-progress.sh backup bh-site-command-upload-restore.test'
     Then return value of command 1 should be 0
+    And return value of command 2 should be 0
+    And return value of command 3 should be 0
     And return value of command 4 should be 0
     And return value of command 5 should be 0
 
   Scenario: Restoring that backup turns upload progress off again
-    When I run 'bin/ee site restore bh-site-command-upload-restore.test'
+    When I run 'bash features/upload-progress.sh restore bh-site-command-upload-restore.test'
     Then return value should be 0
     And STDOUT should return something like
     """
@@ -122,18 +125,18 @@ Feature: Session upload progress stays off
     """
 
   Scenario: The restored site runs with upload progress Off
-    When I run 'curl -s http://bh-site-command-upload-restore.test/upe.php'
+    When I run 'sleep 3; curl -s http://bh-site-command-upload-restore.test/upe.php'
     Then STDOUT should return exactly
     """
     string(0) ""
     """
 
   Scenario: Back up the site without custom.ini
-    When I run 'bin/ee site backup bh-site-command-upload-missing.test'
+    When I run 'bash features/upload-progress.sh backup bh-site-command-upload-missing.test'
     Then return value should be 0
 
   Scenario: Restoring a backup without custom.ini warns instead of creating it
-    When I run 'bin/ee site restore bh-site-command-upload-missing.test'
+    When I run 'bash features/upload-progress.sh restore bh-site-command-upload-missing.test'
     Then return value should be 0
     And STDERR should return something like
     """
@@ -152,7 +155,9 @@ Feature: Session upload progress stays off
     And I run 'bin/ee site delete bh-site-command-upload-on.test --yes'
     And I run 'bin/ee site delete bh-site-command-upload-missing.test --yes'
     And I run 'bin/ee site delete bh-site-command-upload-restore.test --yes'
+    And I run 'bash features/upload-progress.sh clean'
     Then return value of command 1 should be 0
     And return value of command 2 should be 0
     And return value of command 3 should be 0
     And return value of command 4 should be 0
+    And return value of command 5 should be 0
