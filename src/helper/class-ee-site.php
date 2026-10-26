@@ -939,16 +939,33 @@ abstract class EE_Site_Command {
 			$php_conf_dir        = $this->site_data['site_fs_path'] . '/config/php';
 			$php_confd_dir       = $this->site_data['site_fs_path'] . '/config/php/php/conf.d';
 
+			$rollback            = [
+				'site'     => $this->site_data,
+				'backup'   => $php_conf_backup_dir,
+				'stopped'  => false,
+				'switched' => false,
+			];
+
+			// Pull the new image before php stops, so the site is down only while its config is switched.
+			$this->dump_docker_compose_yml( [ 'nohttps' => $no_https ] );
+			chdir( $this->site_data['site_fs_path'] );
+			if ( ! EE::exec( \EE_DOCKER::docker_compose_with_custom() . ' pull php' ) ) {
+				throw new \Exception( "Could not pull the image of PHP $php_version." );
+			}
+
 			// The php container can swap anything in its config volume for a symlink, so it stays stopped until the volume is replaced.
-			$php_stopped = $this->stop_php_for_config_change( $php_conf_dir );
+			$rollback['stopped'] = $this->stop_php_for_config_change( $php_conf_dir );
 
 			EE::log( 'Taking backup of old php config.' );
-			// A fresh copy, so nothing is written through a symlink an older backup holds.
-			$this->fs->remove( $php_conf_backup_dir );
+			// A fresh copy, so nothing is written through a symlink an older backup holds; that one is kept aside.
+			if ( $this->fs->exists( $php_conf_backup_dir ) || is_link( $php_conf_backup_dir ) ) {
+				$this->fs->rename( $php_conf_backup_dir, $php_conf_backup_dir . '.' . date( 'YmdHis' ) );
+			}
 			$this->fs->mkdir( $php_conf_backup_dir );
 			$this->fs->mirror( $php_conf_dir, $php_conf_backup_dir );
 
 			EE::log( 'Updating php config.' );
+			$rollback['switched'] = true;
 			$temp_dir     = EE\Utils\get_temp_dir();
 			$zip_path     = $temp_dir . "phpconf-$php_version.zip";
 			$unzip_folder = $temp_dir . "php-$php_version";
@@ -980,14 +997,13 @@ abstract class EE_Site_Command {
 
 			EE::exec( "chown -R www-data: $php_conf_dir" );
 
-			$this->dump_docker_compose_yml( [ 'nohttps' => $no_https ] );
 			EE::log( 'Starting site with new PHP version: ' . $php_version . '. This may take sometime.' );
-			$php_stopped = false;
-			$this->enable( $args, [ 'force' => true ] );
+			$rollback['stopped'] = true;
+			$this->enable( $args, [ 'force' => true ], false );
 
 		} catch ( \Exception $e ) {
-			if ( ! empty( $php_stopped ) && ( ! chdir( $this->site_data['site_fs_path'] ) || ! EE::exec( \EE_DOCKER::docker_compose_with_custom() . ' start php' ) ) ) {
-				EE::warning( 'Could not start the php container again. Run: ee site enable ' . $this->site_data['site_url'] . ' --force' );
+			if ( ! empty( $rollback ) ) {
+				$this->roll_back_php_update( $rollback, $old_php_version, $no_https );
 			}
 			EE::error( $e->getMessage() );
 		}
@@ -995,6 +1011,48 @@ abstract class EE_Site_Command {
 		$this->restart( $args, [ 'php' => true ] );
 		EE::success( 'Updated site ' . $this->site_data['site_url'] . ' to PHP version: ' . $php_version );
 		delem_log( 'site php version update end' );
+	}
+
+	/**
+	 * Put a failed `update --php` back: the old config (with php stopped again), the old compose file, and a running php container.
+	 *
+	 * @param array  $rollback    Site data as an array, the config backup dir, whether php was stopped and whether the config was switched.
+	 * @param string $old_version PHP version to go back to.
+	 * @param bool   $no_https    Whether the site has no SSL.
+	 */
+	private function roll_back_php_update( $rollback, $old_version, $no_https ) {
+
+		$site_fs_path = $rollback['site']['site_fs_path'];
+		$manual       = 'Run: ee site enable ' . $rollback['site']['site_url'] . ' --force';
+		chdir( $site_fs_path );
+		$compose = \EE_DOCKER::docker_compose_with_custom();
+
+		if ( $rollback['switched'] ) {
+			try {
+				// enable() may have started the new container already; the volume is only safe to touch with it stopped.
+				if ( ! EE::exec( "$compose stop php" ) ) {
+					throw new \Exception( 'could not stop the php container' );
+				}
+				$volume = realpath( $site_fs_path . '/config/php' );
+				\EE\Site\Utils\check_plain_tree( $volume );
+				$this->fs->remove( array_map( function ( $name ) use ( $volume ) {
+					return "$volume/$name";
+				}, array_diff( scandir( $volume ), [ '.', '..' ] ) ) );
+				$this->fs->mirror( $rollback['backup'], $volume );
+				\EE\Site\Utils\chown_container_tree( "$volume/php/conf.d", 'www-data' );
+				EE::log( 'Restored the previous php config.' );
+			} catch ( \Exception $e ) {
+				EE::warning( "Could not restore the previous php config from {$rollback['backup']} ({$e->getMessage()}). $manual" );
+			}
+		}
+
+		$this->site_data                = $rollback['site'];
+		$this->site_data['php_version'] = $old_version;
+		$this->dump_docker_compose_yml( [ 'nohttps' => $no_https ] );
+
+		if ( $rollback['stopped'] && ! \EE_DOCKER::docker_compose_up( $site_fs_path, [ 'php' ] ) ) {
+			EE::warning( "Could not start the php container again. $manual" );
+		}
 	}
 
 	/**
@@ -1029,10 +1087,11 @@ abstract class EE_Site_Command {
 			}
 			\EE\Site\Utils\check_plain_tree( $volume );
 		} catch ( \Exception $e ) {
-			if ( $running ) {
-				EE::exec( "$compose start php" );
+			$message = 'Could not update the php config: ' . rtrim( $e->getMessage(), '.' ) . '. Nothing was changed.';
+			if ( $running && ! EE::exec( "$compose start php" ) ) {
+				$message .= ' Could not start the php container again. Run: ee site enable ' . $this->site_data['site_url'] . ' --force';
 			}
-			throw new \Exception( 'Could not update the php config: ' . rtrim( $e->getMessage(), '.' ) . '. Nothing was changed.' );
+			throw new \Exception( $message );
 		}
 
 		return $running;
