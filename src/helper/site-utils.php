@@ -1913,14 +1913,19 @@ function get_container_file_contents( string $file, string $dir, int $max = 1048
  */
 function put_container_file_contents( string $file, string $dir, string $content, ?string $expected = null, int $max = 1048576 ) {
 
+	// Compared read-only first, so a file that needs no change isn't opened for writing (a hard link or an immutable file would refuse that).
+	$current = get_container_file_contents( $file, $dir, $max );
+	if ( null !== $expected && $current !== $expected ) {
+		throw new \Exception( basename( $file ) . ' changed while it was checked' );
+	}
+	if ( $current === $content ) {
+		return false;
+	}
+
 	$handle = open_container_file( $file, 'r+', $dir );
 	try {
-		$current = read_container_file( $handle, $max );
-		if ( null !== $expected && $current !== $expected ) {
+		if ( read_container_file( $handle, $max ) !== $current ) {
 			throw new \Exception( basename( $file ) . ' changed while it was checked' );
-		}
-		if ( $current === $content ) {
-			return false;
 		}
 		try {
 			rewrite_container_file( $handle, $content );
