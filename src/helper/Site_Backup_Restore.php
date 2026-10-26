@@ -1693,7 +1693,7 @@ class Site_Backup_Restore {
 	/**
 	 * Copy the backed-up php-fpm.d files, php.ini and custom.ini over the site's ones.
 	 *
-	 * The site's php container can swap anything in its config volume for a symlink, so every file is written in place through a checked handle, and none is created. The backup came from that volume too, so its files must be regular.
+	 * The site's php container can swap anything in its config volume for a symlink, so an existing file is written in place through a checked handle, and a missing one is created from inside the container. The backup came from that volume too, so its files must be regular.
 	 *
 	 * @param string $source Extracted `php` directory of the backup.
 	 */
@@ -1732,22 +1732,61 @@ class Site_Backup_Restore {
 			try {
 				$content = \EE\Site\Utils\get_container_file_contents( $from, realpath( $source ) . '/' . dirname( $file ) );
 				$dir     = \EE\Site\Utils\site_php_conf_dir( $site_dir, dirname( $file ) );
-				if ( ! file_exists( "$dir/" . basename( $file ) ) && ! is_link( "$dir/" . basename( $file ) ) ) {
-					throw new \Exception( 'it is missing in the site' );
+				$dest    = "$dir/" . basename( $file );
+				clearstatcache( true );
+				if ( realpath( dirname( $dest ) ) === $dir && ! file_exists( $dest ) && ! is_link( $dest ) ) {
+					// On macOS config/php isn't mounted (only custom.ini is), so a file missing there has no effect, as before.
+					if ( 'Darwin' === PHP_OS_FAMILY ) {
+						EE::debug( "Not restoring config/php/$file: missing in the site." );
+						continue;
+					}
+					$this->create_in_php_container( $file, $content );
+				} else {
+					\EE\Site\Utils\put_container_file_contents( $dest, $dir, $content );
 				}
-				\EE\Site\Utils\put_container_file_contents( "$dir/" . basename( $file ), $dir, $content );
 			} catch ( \Exception $e ) {
 				$message = "Could not restore config/php/$file ({$e->getMessage()}).";
 				if ( null !== $content ) {
 					try {
 						$this->fs->dumpFile( "$kept/$file", $content );
-						$message .= " The backed-up file is kept as $kept/$file; copy it to config/php/$file and run: ee site reload $site_url";
+						$message .= " The backed-up file is kept as $kept/$file; put it back once config/php/" . dirname( $file ) . " is a plain directory again, then run: ee site reload $site_url";
 					} catch ( \Exception $dump_error ) {
 						$message .= ' Could not keep the backed-up file either: ' . $dump_error->getMessage();
 					}
 				}
 				EE::warning( $message );
 			}
+		}
+	}
+
+	/**
+	 * Create a php config file the site lacks from inside its running php container, where a symlink the container made can't point at the host.
+	 *
+	 * @param string $file    Path below config/php (/usr/local/etc in the container).
+	 * @param string $content Content.
+	 *
+	 * @throws \Exception
+	 */
+	private function create_in_php_container( $file, $content ) {
+
+		$cwd = getcwd();
+		chdir( EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
+		$id = trim( EE::launch( \EE_DOCKER::docker_compose_with_custom() . ' ps -q php' )->stdout );
+		if ( false !== $cwd ) {
+			chdir( $cwd );
+		}
+		if ( '' === $id || 'running' !== \EE_DOCKER::container_status( $id ) ) {
+			throw new \Exception( 'it is missing in the site, and its php container is not running to create it' );
+		}
+
+		$tmp = tempnam( \EE\Utils\get_temp_dir(), 'ee-php-conf-' );
+		if ( false === $tmp || strlen( $content ) !== file_put_contents( $tmp, $content ) ) {
+			throw new \Exception( 'could not write a temporary file' );
+		}
+		$result = EE::launch( sprintf( 'docker exec -i -u root %s sh -c %s sh %s < %s', escapeshellarg( $id ), escapeshellarg( 'test ! -e "$1" && test ! -L "$1" && cat > "$1"' ), escapeshellarg( '/usr/local/etc/' . $file ), escapeshellarg( $tmp ) ) );
+		unlink( $tmp );
+		if ( $result->return_code ) {
+			throw new \Exception( 'it is missing in the site and could not be created in its php container' );
 		}
 	}
 
