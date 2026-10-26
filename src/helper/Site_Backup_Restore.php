@@ -1684,17 +1684,71 @@ class Site_Backup_Restore {
 		}
 
 		if ( $this->fs->exists( sprintf( '%s/php', $backup_dir ) ) ) {
-			$restore_command = sprintf( 'rsync -a %s/php/php-fpm.d/ %s/config/php/php-fpm.d/', $backup_dir, EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
-			EE::exec( $restore_command );
-
-			$restore_command = sprintf( 'rsync -a %s/php/php/php.ini %s/config/php/php/php.ini', $backup_dir, EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
-			EE::exec( $restore_command );
-
-			$restore_command = sprintf( 'rsync -a %s/php/php/conf.d/custom.ini %s/config/php/php/conf.d/custom.ini', $backup_dir, EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
-			EE::exec( $restore_command );
+			$this->restore_php_conf_files( $backup_dir . '/php' );
 		}
 
 		$this->keep_session_upload_progress_off();
+	}
+
+	/**
+	 * Copy the backed-up php-fpm.d files, php.ini and custom.ini over the site's ones.
+	 *
+	 * The site's php container can swap anything in its config volume for a symlink, so every file is written in place through a checked handle, and none is created. The backup came from that volume too, so its files must be regular.
+	 *
+	 * @param string $source Extracted `php` directory of the backup.
+	 */
+	private function restore_php_conf_files( $source ) {
+
+		$site_url = $this->site_data['site_url'];
+		$site_dir = EE_ROOT_DIR . '/sites/' . $site_url;
+		// Some 7-Zip versions store config/php itself as a link, which points back at the live volume.
+		if ( is_link( $source ) ) {
+			EE::warning( 'Could not restore the php config: the backup holds a symlink instead of it.' );
+
+			return;
+		}
+
+		$files = [];
+		if ( is_link( $source . '/php-fpm.d' ) ) {
+			EE::warning( 'Could not restore config/php/php-fpm.d: the backup holds a symlink instead of it.' );
+		} else {
+			foreach ( @scandir( $source . '/php-fpm.d' ) ?: [] as $name ) {
+				if ( '.' !== $name && '..' !== $name ) {
+					$files[] = 'php-fpm.d/' . $name;
+				}
+			}
+		}
+		$files[] = 'php/php.ini';
+		$files[] = 'php/conf.d/custom.ini';
+
+		$kept = EE_BACKUP_DIR . '/' . $site_url . '-php-conf-not-restored-' . date( 'Ymd-His' );
+		foreach ( $files as $file ) {
+			$from = $source . '/' . $file;
+			if ( ! file_exists( $from ) && ! is_link( $from ) ) {
+				continue;
+			}
+
+			$content = null;
+			try {
+				$content = \EE\Site\Utils\get_container_file_contents( $from, realpath( $source ) . '/' . dirname( $file ) );
+				$dir     = \EE\Site\Utils\site_php_conf_dir( $site_dir, dirname( $file ) );
+				if ( ! file_exists( "$dir/" . basename( $file ) ) && ! is_link( "$dir/" . basename( $file ) ) ) {
+					throw new \Exception( 'it is missing in the site' );
+				}
+				\EE\Site\Utils\put_container_file_contents( "$dir/" . basename( $file ), $dir, $content );
+			} catch ( \Exception $e ) {
+				$message = "Could not restore config/php/$file ({$e->getMessage()}).";
+				if ( null !== $content ) {
+					try {
+						$this->fs->dumpFile( "$kept/$file", $content );
+						$message .= " The backed-up file is kept as $kept/$file; copy it to config/php/$file and run: ee site reload $site_url";
+					} catch ( \Exception $dump_error ) {
+						$message .= ' Could not keep the backed-up file either: ' . $dump_error->getMessage();
+					}
+				}
+				EE::warning( $message );
+			}
+		}
 	}
 
 	/**
@@ -1715,34 +1769,15 @@ class Site_Backup_Restore {
 
 		// The directory is in the site's config volume, which its php container can change: every read and write goes through a checked handle.
 		try {
-			$dir    = \EE\Site\Utils\site_php_conf_dir( EE_ROOT_DIR . '/sites/' . $site_url );
-			$handle = \EE\Site\Utils\open_container_file( $file, 'r', $dir );
-			try {
-				$content = \EE\Site\Utils\read_container_file( $handle );
-			} finally {
-				fclose( $handle );
-			}
+			$dir     = \EE\Site\Utils\site_php_conf_dir( EE_ROOT_DIR . '/sites/' . $site_url );
+			$content = \EE\Site\Utils\get_container_file_contents( $file, $dir, 65536 );
 
 			$new_content = \EE\Site\Utils\add_session_upload_progress_off( $content );
 			if ( null === $new_content ) {
 				return;
 			}
 
-			$handle = \EE\Site\Utils\open_container_file( $file, 'r+', $dir );
-			try {
-				if ( \EE\Site\Utils\read_container_file( $handle ) !== $content ) {
-					throw new \Exception( 'it changed while it was checked' );
-				}
-				try {
-					\EE\Site\Utils\rewrite_container_file( $handle, $new_content );
-				} catch ( \Exception $e ) {
-					// A short write leaves part of the file; put the restored one back.
-					\EE\Site\Utils\rewrite_container_file( $handle, $content );
-					throw $e;
-				}
-			} finally {
-				fclose( $handle );
-			}
+			\EE\Site\Utils\put_container_file_contents( $file, $dir, $new_content, $content, 65536 );
 		} catch ( \Exception $e ) {
 			EE::warning( "Could not turn off session.upload_progress in the restored custom.ini ({$e->getMessage()}). $manual" );
 
