@@ -1770,7 +1770,8 @@ function open_container_file( string $file, string $mode, string $dir ) {
 		throw new \Exception( "a directory above $name is a symlink" );
 	}
 
-	$handle = @fopen( $file, $mode );
+	// Non-blocking ('n', O_NONBLOCK), so a FIFO swapped in can't stall the open before it is rejected below.
+	$handle = @fopen( $file, $mode . 'n' );
 	if ( false === $handle ) {
 		throw new \Exception( "could not open $name" );
 	}
@@ -1791,6 +1792,7 @@ function open_container_file( string $file, string $mode, string $dir ) {
 		fclose( $handle );
 		throw new \Exception( $error );
 	}
+	stream_set_blocking( $handle, true );
 
 	return $handle;
 }
