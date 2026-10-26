@@ -8,7 +8,7 @@ Feature: Session upload progress stays off
 
   Scenario: Sites with a CRLF PATH-only setting, an explicit global On and no custom.ini
     When I run 'bin/ee site create bh-site-command-upload-crlf.test --type=php'
-    And I run 'bash features/upload-progress.sh crlf-path bh-site-command-upload-crlf.test'
+    And I run 'bash features/upload-progress.sh php-ini-on bh-site-command-upload-crlf.test && bash features/upload-progress.sh crlf-path bh-site-command-upload-crlf.test'
     And I run 'bash features/upload-progress.sh probe bh-site-command-upload-crlf.test'
     And I run 'bin/ee site reload bh-site-command-upload-crlf.test'
     And I run 'bin/ee site create bh-site-command-upload-on.test --type=php'
@@ -99,7 +99,7 @@ Feature: Session upload progress stays off
 
   Scenario: Back up a site whose custom.ini lacks the Off line
     When I run 'bin/ee site create bh-site-command-upload-restore.test --type=php'
-    And I run 'bash features/upload-progress.sh strip bh-site-command-upload-restore.test'
+    And I run 'bash features/upload-progress.sh php-ini-on bh-site-command-upload-restore.test && bash features/upload-progress.sh strip bh-site-command-upload-restore.test'
     And I run 'bash features/upload-progress.sh probe bh-site-command-upload-restore.test'
     And I run 'bin/ee site reload bh-site-command-upload-restore.test'
     And I run 'bash features/upload-progress.sh backup bh-site-command-upload-restore.test'
@@ -108,6 +108,13 @@ Feature: Session upload progress stays off
     And return value of command 3 should be 0
     And return value of command 4 should be 0
     And return value of command 5 should be 0
+
+  Scenario: Without the Off line the site runs with upload progress On
+    When I run 'curl -s http://bh-site-command-upload-restore.test/upe.php'
+    Then STDOUT should return exactly
+    """
+    string(1) "1"
+    """
 
   Scenario: Restoring that backup turns upload progress off again
     When I run 'bash features/upload-progress.sh restore bh-site-command-upload-restore.test'

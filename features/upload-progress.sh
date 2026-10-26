@@ -9,6 +9,8 @@ guard() {
 	fi
 }
 case $1 in
+# Before v4.13.3 neither php.ini nor custom.ini set it; On is set explicitly so newer templates and images don't hide the gap.
+php-ini-on) sed -i '/session\.upload_progress\.enabled/d' "${ini%/conf.d/custom.ini}/php.ini"; printf '\nsession.upload_progress.enabled = On\n' >> "${ini%/conf.d/custom.ini}/php.ini" ;;
 crlf-path) printf 'upload_max_filesize = 100M\r\n[PATH=/var/www/htdocs/x]\r\nsession.upload_progress.enabled = Off\r\n' > "$ini" ;;
 append-on) printf '\nsession.upload_progress.enabled = On\n' >> "$ini" ;;
 strip) sed -i '/session\.upload_progress\.enabled/d; /Session upload progress is off/d' "$ini" ;;
