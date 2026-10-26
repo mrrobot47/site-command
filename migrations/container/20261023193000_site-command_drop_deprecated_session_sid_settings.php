@@ -152,7 +152,16 @@ class DropDeprecatedSessionSidSettings extends Base {
 		$backup = EE_BACKUP_DIR . '/' . $site->site_url . '/php.ini.with-session-sid-settings';
 		$this->fs->dumpFile( $backup, $content );
 
-		put_container_file_contents( $ini, $dir, $new_content, $content, self::MAX_SIZE );
+		try {
+			put_container_file_contents( $ini, $dir, $new_content, $content, self::MAX_SIZE );
+		} catch ( \Exception $e ) {
+			// A failed write may have left php.ini partly written; any other failure left it as it was.
+			if ( 0 === strpos( $e->getMessage(), 'could not write' ) ) {
+				throw new \Exception( $e->getMessage() . "; the previous file is $backup" );
+			}
+			$this->fs->remove( $backup );
+			throw $e;
+		}
 
 		$this->changed[] = [
 			'site'   => $site,
