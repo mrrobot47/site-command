@@ -1034,6 +1034,7 @@ abstract class EE_Site_Command {
 					throw new \Exception( 'could not stop the php container' );
 				}
 				$volume = realpath( $site_fs_path . '/config/php' );
+				self::check_config_volume_unused( $volume );
 				\EE\Site\Utils\check_plain_tree( $volume );
 				$this->fs->remove( array_map( function ( $name ) use ( $volume ) {
 					return "$volume/$name";
@@ -1078,13 +1079,7 @@ abstract class EE_Site_Command {
 			if ( false === $volume ) {
 				throw new \Exception( "Could not resolve $php_conf_dir." );
 			}
-			// On Linux config/php links to the volume's _data; a custom compose file may mount it elsewhere too.
-			if ( '_data' === basename( $volume ) ) {
-				$users = EE::launch( 'docker ps -q --filter ' . escapeshellarg( 'volume=' . basename( dirname( $volume ) ) ) );
-				if ( $users->return_code || '' !== trim( $users->stdout ) ) {
-					throw new \Exception( 'The php config volume is still mounted by a running container (' . implode( ', ', preg_split( '/\s+/', trim( $users->stdout ) ) ) . '); stop it and re-run the update.' );
-				}
-			}
+			self::check_config_volume_unused( $volume );
 			\EE\Site\Utils\check_plain_tree( $volume );
 		} catch ( \Exception $e ) {
 			$message = 'Could not update the php config: ' . rtrim( $e->getMessage(), '.' ) . '. Nothing was changed.';
@@ -1095,6 +1090,24 @@ abstract class EE_Site_Command {
 		}
 
 		return $running;
+	}
+
+	/**
+	 * On Linux config/php links to the volume's _data; a custom compose file may mount it in another service too.
+	 *
+	 * @param string $volume Real path of config/php.
+	 *
+	 * @throws \Exception When a running container still mounts it.
+	 */
+	private static function check_config_volume_unused( $volume ) {
+
+		if ( '_data' !== basename( $volume ) ) {
+			return;
+		}
+		$users = EE::launch( 'docker ps -q --filter ' . escapeshellarg( 'volume=' . basename( dirname( $volume ) ) ) );
+		if ( $users->return_code || '' !== trim( $users->stdout ) ) {
+			throw new \Exception( 'The php config volume is still mounted by a running container (' . implode( ', ', preg_split( '/\s+/', trim( $users->stdout ) ) ) . '); stop it and re-run the update.' );
+		}
 	}
 
 	protected function sendmail_path_update( $msmtp ) {
