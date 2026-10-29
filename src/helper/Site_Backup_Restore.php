@@ -53,6 +53,9 @@ class Site_Backup_Restore {
 	// Global backup lock handle for serializing backups
 	private $global_backup_lock_handle = null;
 
+	// ID of the site's php container while its config is restored; '' when it isn't running.
+	private $php_container_id;
+
 	public function __construct() {
 		$this->fs = new Filesystem();
 	}
@@ -1691,9 +1694,11 @@ class Site_Backup_Restore {
 	}
 
 	/**
-	 * Copy the backed-up php-fpm.d files, php.ini and custom.ini over the site's ones.
+	 * Copy the backed-up php-fpm.d tree, php.ini and custom.ini over the site's ones.
 	 *
-	 * The site's php container can swap anything in its config volume for a symlink, so an existing file is written in place through a checked handle, and a missing one is created from inside the container. The backup came from that volume too, so its files must be regular.
+	 * The site's php container can swap anything in its config volume for a symlink, so an existing file is written in place through a checked handle, and a missing directory or file is created from inside the running container, where a symlink can't reach the host. The backup came from that volume too, so it may hold only directories and regular files.
+	 *
+	 * Modes (permission bits) come from the backup, applied inside the container. Owners don't: the backup has none (unzip extracts as root), so a created entry takes the owner of the directory it is created in and an existing one keeps its own. Timestamps aren't restored.
 	 *
 	 * @param string $source Extracted `php` directory of the backup.
 	 */
@@ -1701,6 +1706,7 @@ class Site_Backup_Restore {
 
 		$site_url = $this->site_data['site_url'];
 		$site_dir = EE_ROOT_DIR . '/sites/' . $site_url;
+		clearstatcache( true );
 		// Some 7-Zip versions store config/php itself as a link, which points back at the live volume.
 		if ( is_link( $source ) ) {
 			EE::warning( 'Could not restore the php config: the backup holds a symlink instead of it.' );
@@ -1708,48 +1714,79 @@ class Site_Backup_Restore {
 			return;
 		}
 
-		$files = [];
-		if ( is_link( $source . '/php-fpm.d' ) ) {
-			EE::warning( 'Could not restore config/php/php-fpm.d: the backup holds a symlink instead of it.' );
-		} else {
-			foreach ( @scandir( $source . '/php-fpm.d' ) ?: [] as $name ) {
-				if ( '.' !== $name && '..' !== $name ) {
-					$files[] = 'php-fpm.d/' . $name;
-				}
-			}
+		$entries = [];
+		$refused = [];
+		$this->list_php_conf_backup( $source, 'php-fpm.d', true, $entries, $refused );
+		foreach ( [ 'php', 'php/php.ini', 'php/conf.d', 'php/conf.d/custom.ini' ] as $path ) {
+			$this->list_php_conf_backup( $source, $path, false, $entries, $refused );
 		}
-		$files[] = 'php/php.ini';
-		$files[] = 'php/conf.d/custom.ini';
+		foreach ( $refused as $path => $reason ) {
+			EE::warning( "Could not restore config/php/$path: $reason." );
+		}
 
-		$kept = EE_BACKUP_DIR . '/' . $site_url . '-php-conf-not-restored-' . date( 'Ymd-His' );
-		foreach ( $files as $file ) {
-			$from = $source . '/' . $file;
-			if ( ! file_exists( $from ) && ! is_link( $from ) ) {
-				continue;
-			}
-
+		$this->php_container_id = null;
+		$kept                   = EE_BACKUP_DIR . '/' . $site_url . '-php-conf-not-restored-' . date( 'Ymd-His' );
+		$not_restored           = [];
+		$skipped                = [];
+		$mode_not_set           = [];
+		foreach ( $entries as $path => $stat ) {
+			$is_dir  = 0040000 === ( $stat['mode'] & 0170000 );
+			$mode    = sprintf( '%04o', $stat['mode'] & 0777 );
+			$parent  = dirname( $path );
 			$content = null;
 			try {
-				$content = \EE\Site\Utils\get_container_file_contents( $from, realpath( $source ) . '/' . dirname( $file ) );
-				$dir     = \EE\Site\Utils\site_php_conf_dir( $site_dir, dirname( $file ) );
-				$dest    = "$dir/" . basename( $file );
-				clearstatcache( true );
-				if ( realpath( dirname( $dest ) ) === $dir && ! file_exists( $dest ) && ! is_link( $dest ) ) {
-					// On macOS config/php isn't mounted (only custom.ini is), so a file missing there has no effect, as before.
-					if ( 'Darwin' === PHP_OS_FAMILY ) {
-						EE::debug( "Not restoring config/php/$file: missing in the site." );
+				if ( ! $is_dir ) {
+					$content = \EE\Site\Utils\get_container_file_contents( "$source/$path", realpath( $source ) . ( '.' === $parent ? '' : "/$parent" ) );
+				}
+				if ( isset( $skipped[ $parent ] ) ) {
+					$skipped[ $path ] = true;
+					continue;
+				}
+				if ( isset( $not_restored[ $parent ] ) ) {
+					$not_restored[ $path ] = $not_restored[ $parent ];
+					if ( $is_dir ) {
 						continue;
 					}
-					$this->create_in_php_container( $file, $content );
+					throw new \Exception( "config/php/{$not_restored[ $parent ]} was not restored" );
+				}
+				$dir  = \EE\Site\Utils\site_php_conf_dir( $site_dir, '.' === $parent ? '' : $parent );
+				$dir  = rtrim( $dir, '/' );
+				$dest = "$dir/" . basename( $path );
+				clearstatcache( true );
+				$current = @lstat( $dest );
+				if ( realpath( $dir ) !== $dir ) {
+					throw new \Exception( "config/php/$parent is not a directory, or a directory above it is a symlink" );
+				}
+				if ( ! $current ) {
+					// On macOS config/php isn't mounted (only custom.ini is), so an entry missing there has no effect, as before.
+					if ( 'Darwin' === PHP_OS_FAMILY ) {
+						EE::debug( "Not restoring config/php/$path: missing in the site." );
+						$skipped[ $path ] = true;
+						continue;
+					}
+					$this->php_container_op( $is_dir ? 'dir' : 'file', $path, $mode, $content );
+				} elseif ( $is_dir ) {
+					if ( 0040000 !== ( $current['mode'] & 0170000 ) || realpath( $dest ) !== $dest ) {
+						throw new \Exception( 'it is not a directory in the site' );
+					}
 				} else {
 					\EE\Site\Utils\put_container_file_contents( $dest, $dir, $content );
 				}
+				// Not on macOS, where the container doesn't see config/php.
+				if ( $current && 'Darwin' !== PHP_OS_FAMILY && $mode !== sprintf( '%04o', $current['mode'] & 07777 ) ) {
+					try {
+						$this->php_container_op( 'mode', $path, $mode );
+					} catch ( \Exception $e ) {
+						$mode_not_set[] = "config/php/$path ({$e->getMessage()})";
+					}
+				}
 			} catch ( \Exception $e ) {
-				$message = "Could not restore config/php/$file ({$e->getMessage()}).";
+				$not_restored[ $path ] = $not_restored[ $path ] ?? $path;
+				$message               = "Could not restore config/php/$path ({$e->getMessage()}).";
 				if ( null !== $content ) {
 					try {
-						$this->fs->dumpFile( "$kept/$file", $content );
-						$message .= " The backed-up file is kept as $kept/$file; put it back once config/php/" . dirname( $file ) . " is a plain directory again, then run: ee site reload $site_url";
+						$this->fs->dumpFile( "$kept/$path", $content );
+						$message .= " The backed-up file is kept as $kept/$path; put it back once config/php/" . ( $not_restored[ $parent ] ?? $parent ) . " is a plain directory again, then run: ee site reload $site_url";
 					} catch ( \Exception $dump_error ) {
 						$message .= ' Could not keep the backed-up file either: ' . $dump_error->getMessage();
 					}
@@ -1757,36 +1794,117 @@ class Site_Backup_Restore {
 				EE::warning( $message );
 			}
 		}
+		if ( $mode_not_set ) {
+			EE::warning( 'Restored, but could not set the backed-up mode of: ' . implode( ', ', $mode_not_set ) . '.' );
+		}
 	}
 
 	/**
-	 * Create a php config file the site lacks from inside its running php container, where a symlink the container made can't point at the host.
+	 * Collect a backed-up entry below the extracted `php` directory, and with $recurse everything below it, parents first.
 	 *
-	 * @param string $file    Path below config/php (/usr/local/etc in the container).
-	 * @param string $content Content.
+	 * @param string $source  Extracted `php` directory of the backup.
+	 * @param string $path    Path below it.
+	 * @param bool   $recurse Whether to collect a directory's entries.
+	 * @param array  $entries Path => lstat() of each directory and regular file.
+	 * @param array  $refused Path => reason for each entry that is skipped.
+	 * @param int    $depth   Directory depth.
+	 */
+	private function list_php_conf_backup( $source, $path, $recurse, array &$entries, array &$refused, $depth = 0 ) {
+
+		$parent = dirname( $path );
+		if ( '.' !== $parent && ! isset( $entries[ $parent ] ) ) {
+			return;
+		}
+		$stat = @lstat( "$source/$path" );
+		if ( ! $stat ) {
+			return;
+		}
+		$type = $stat['mode'] & 0170000;
+		if ( 0040000 !== $type && 0100000 !== $type ) {
+			$refused[ $path ] = 'the backup holds a symlink or special file there';
+
+			return;
+		}
+		if ( count( $entries ) >= 1000 || $depth > 16 ) {
+			$refused[ $path ] = 'the backup holds too many files or directories';
+
+			return;
+		}
+		$entries[ $path ] = $stat;
+		if ( ! $recurse || 0040000 !== $type ) {
+			return;
+		}
+		foreach ( @scandir( "$source/$path" ) ?: [] as $name ) {
+			if ( '.' === $name || '..' === $name ) {
+				continue;
+			}
+			if ( preg_match( '/[\x00-\x1f\x7f]/', $name ) ) {
+				$refused[ $path . '/' . addcslashes( $name, "\0..\37\177" ) ] = 'its name holds control characters';
+				continue;
+			}
+			$this->list_php_conf_backup( $source, "$path/$name", true, $entries, $refused, $depth + 1 );
+		}
+	}
+
+	/**
+	 * Create a directory or file the site's php config lacks, or set the mode of one, from inside its running php container, where a symlink the container made can't point at the host.
+	 *
+	 * The parent must be a real directory (no symlink in its path) inside the container, and a created entry takes the parent's owner.
+	 *
+	 * @param string      $op      'dir', 'file' or 'mode'.
+	 * @param string      $path    Path below config/php (/usr/local/etc in the container).
+	 * @param string      $mode    Octal permission bits.
+	 * @param string|null $content Content of a created file.
 	 *
 	 * @throws \Exception
 	 */
-	private function create_in_php_container( $file, $content ) {
+	private function php_container_op( $op, $path, $mode, $content = null ) {
 
-		$cwd = getcwd();
-		chdir( EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
-		$id = trim( EE::launch( \EE_DOCKER::docker_compose_with_custom() . ' ps -q php' )->stdout );
-		if ( false !== $cwd ) {
-			chdir( $cwd );
-		}
-		if ( '' === $id || 'running' !== \EE_DOCKER::container_status( $id ) ) {
-			throw new \Exception( 'it is missing in the site, and its php container is not running to create it' );
+		if ( ! preg_match( '#^(php-fpm\.d|php)(/[^/]+)*$#', $path ) || preg_match( '#(^|/)\.\.?(/|$)|[\x00-\x1f\x7f]#', $path ) || ! preg_match( '/^0[0-7]{3}$/', $mode ) ) {
+			throw new \Exception( 'unexpected path or mode' );
 		}
 
-		$tmp = tempnam( \EE\Utils\get_temp_dir(), 'ee-php-conf-' );
-		if ( false === $tmp || strlen( $content ) !== file_put_contents( $tmp, $content ) ) {
-			throw new \Exception( 'could not write a temporary file' );
+		if ( null === $this->php_container_id ) {
+			$cwd = getcwd();
+			chdir( EE_ROOT_DIR . '/sites/' . $this->site_data['site_url'] );
+			$id = trim( EE::launch( \EE_DOCKER::docker_compose_with_custom() . ' ps -q php' )->stdout );
+			if ( false !== $cwd ) {
+				chdir( $cwd );
+			}
+			$this->php_container_id = ( '' !== $id && 'running' === \EE_DOCKER::container_status( $id ) ) ? $id : '';
 		}
-		$result = EE::launch( sprintf( 'docker exec -i -u root %s sh -c %s sh %s < %s', escapeshellarg( $id ), escapeshellarg( 'test ! -e "$1" && test ! -L "$1" && cat > "$1"' ), escapeshellarg( '/usr/local/etc/' . $file ), escapeshellarg( $tmp ) ) );
-		unlink( $tmp );
+		if ( '' === $this->php_container_id ) {
+			throw new \Exception( 'its php container is not running' );
+		}
+
+		// Run relative to the parent the shell changed into, so a directory swapped above it afterwards can't redirect the change.
+		$script = 'set -e; op=$2; m=$3; p=$1/$4; d=${p%/*}; n=./${p##*/}
+cd -P -- "$d" 2>/dev/null && [ "$(pwd -P)" = "$d" ] || exit 3
+if [ "$op" = mode ]; then [ ! -L "$n" ] || exit 4; chmod -- "$m" "$n"; exit 0; fi
+[ ! -e "$n" ] && [ ! -L "$n" ] || exit 4
+o=$(stat -c %u:%g .)
+if [ "$op" = dir ]; then mkdir -m 700 -- "$n"; else (umask 077; set -C; cat > "$n"); fi
+chown -h -- "$o" "$n"; chmod -- "$m" "$n"';
+
+		$tmp = null;
+		if ( 'file' === $op ) {
+			$tmp = tempnam( \EE\Utils\get_temp_dir(), 'ee-php-conf-' );
+			if ( false === $tmp || strlen( $content ) !== file_put_contents( $tmp, $content ) ) {
+				throw new \Exception( 'could not write a temporary file' );
+			}
+		}
+		$result = EE::launch( sprintf( 'docker exec %s-u root %s sh -c %s sh /usr/local/etc %s %s %s%s', $tmp ? '-i ' : '', escapeshellarg( $this->php_container_id ), escapeshellarg( $script ), escapeshellarg( $op ), escapeshellarg( $mode ), escapeshellarg( $path ), $tmp ? ' < ' . escapeshellarg( $tmp ) : '' ) );
+		if ( $tmp ) {
+			unlink( $tmp );
+		}
+		if ( 3 === $result->return_code ) {
+			throw new \Exception( 'a directory above it is not a real directory in its php container' );
+		}
+		if ( 4 === $result->return_code ) {
+			throw new \Exception( 'mode' === $op ? 'it is a symlink in its php container' : 'it appeared in its php container while it was restored' );
+		}
 		if ( $result->return_code ) {
-			throw new \Exception( 'it is missing in the site and could not be created in its php container' );
+			throw new \Exception( 'mode' === $op ? 'could not change it in its php container' : 'it is missing in the site and could not be created in its php container' );
 		}
 	}
 
