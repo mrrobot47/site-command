@@ -1696,9 +1696,8 @@ class Site_Backup_Restore {
 	/**
 	 * Copy the backed-up php-fpm.d tree, php.ini and custom.ini over the site's ones.
 	 *
-	 * The site's php container can swap anything in its config volume for a symlink, so an existing file is written in place through a checked handle, and a missing directory or file is created from inside the running container, where a symlink can't reach the host. The backup came from that volume too, so it may hold only directories and regular files.
-	 *
-	 * Modes (permission bits) come from the backup, applied inside the container. Owners don't: the backup has none (unzip extracts as root), so a created entry takes the owner of the directory it is created in and an existing one keeps its own. Timestamps aren't restored.
+	 * The container can swap anything in its config volume, so existing files are written in place through checked handles and missing entries are created inside the container; the backup came from that volume too, so it may hold only directories and regular files.
+	 * Permission bits come from the backup; owners don't (the backup has none), so a created entry belongs to its parent's owner and an existing one keeps its own.
 	 *
 	 * @param string $source Extracted `php` directory of the backup.
 	 */
@@ -1716,10 +1715,10 @@ class Site_Backup_Restore {
 
 		$entries = [];
 		$refused = [];
-		$this->list_php_conf_backup( $source, 'php-fpm.d', true, $entries, $refused );
 		foreach ( [ 'php', 'php/php.ini', 'php/conf.d', 'php/conf.d/custom.ini' ] as $path ) {
 			$this->list_php_conf_backup( $source, $path, false, $entries, $refused );
 		}
+		$this->list_php_conf_backup( $source, 'php-fpm.d', true, $entries, $refused );
 		foreach ( $refused as $path => $reason ) {
 			EE::warning( "Could not restore config/php/$path: $reason." );
 		}
@@ -1734,13 +1733,13 @@ class Site_Backup_Restore {
 			$mode    = sprintf( '%04o', $stat['mode'] & 0777 );
 			$parent  = dirname( $path );
 			$content = null;
+			if ( isset( $skipped[ $parent ] ) ) {
+				$skipped[ $path ] = true;
+				continue;
+			}
 			try {
 				if ( ! $is_dir ) {
 					$content = \EE\Site\Utils\get_container_file_contents( "$source/$path", realpath( $source ) . ( '.' === $parent ? '' : "/$parent" ) );
-				}
-				if ( isset( $skipped[ $parent ] ) ) {
-					$skipped[ $path ] = true;
-					continue;
 				}
 				if ( isset( $not_restored[ $parent ] ) ) {
 					$not_restored[ $path ] = $not_restored[ $parent ];
@@ -1749,8 +1748,7 @@ class Site_Backup_Restore {
 					}
 					throw new \Exception( "config/php/{$not_restored[ $parent ]} was not restored" );
 				}
-				$dir  = \EE\Site\Utils\site_php_conf_dir( $site_dir, '.' === $parent ? '' : $parent );
-				$dir  = rtrim( $dir, '/' );
+				$dir  = rtrim( \EE\Site\Utils\site_php_conf_dir( $site_dir, '.' === $parent ? '' : $parent ), '/' );
 				$dest = "$dir/" . basename( $path );
 				clearstatcache( true );
 				$current = @lstat( $dest );
@@ -1764,7 +1762,9 @@ class Site_Backup_Restore {
 						$skipped[ $path ] = true;
 						continue;
 					}
-					$this->php_container_op( $is_dir ? 'dir' : 'file', $path, $mode, $content );
+					if ( ! $this->php_container_op( $is_dir ? 'dir' : 'file', $path, $mode, $content ) ) {
+						$mode_not_set[] = "config/php/$path (could not change it in its php container)";
+					}
 				} elseif ( $is_dir ) {
 					if ( 0040000 !== ( $current['mode'] & 0170000 ) || realpath( $dest ) !== $dest ) {
 						throw new \Exception( 'it is not a directory in the site' );
@@ -1773,9 +1773,11 @@ class Site_Backup_Restore {
 					\EE\Site\Utils\put_container_file_contents( $dest, $dir, $content );
 				}
 				// Not on macOS, where the container doesn't see config/php.
-				if ( $current && 'Darwin' !== PHP_OS_FAMILY && $mode !== sprintf( '%04o', $current['mode'] & 07777 ) ) {
+				if ( $current && 'Darwin' !== PHP_OS_FAMILY && $mode !== sprintf( '%04o', $current['mode'] & 0777 ) ) {
 					try {
-						$this->php_container_op( 'mode', $path, $mode );
+						if ( ! $this->php_container_op( 'mode', $path, $mode ) ) {
+							throw new \Exception( 'could not change it in its php container' );
+						}
 					} catch ( \Exception $e ) {
 						$mode_not_set[] = "config/php/$path ({$e->getMessage()})";
 					}
@@ -1786,7 +1788,8 @@ class Site_Backup_Restore {
 				if ( null !== $content ) {
 					try {
 						$this->fs->dumpFile( "$kept/$path", $content );
-						$message .= " The backed-up file is kept as $kept/$path; put it back once config/php/" . ( $not_restored[ $parent ] ?? $parent ) . " is a plain directory again, then run: ee site reload $site_url";
+						$fix      = isset( $not_restored[ $parent ] ) ? "once config/php/{$not_restored[ $parent ]} is a plain directory again" : 'once the cause is fixed';
+						$message .= " The backed-up file is kept as $kept/$path; put it back $fix, then run: ee site reload $site_url";
 					} catch ( \Exception $dump_error ) {
 						$message .= ' Could not keep the backed-up file either: ' . $dump_error->getMessage();
 					}
@@ -1808,33 +1811,46 @@ class Site_Backup_Restore {
 	 * @param array  $entries Path => lstat() of each directory and regular file.
 	 * @param array  $refused Path => reason for each entry that is skipped.
 	 * @param int    $depth   Directory depth.
+	 *
+	 * @return bool False once the entry limit is reached.
 	 */
 	private function list_php_conf_backup( $source, $path, $recurse, array &$entries, array &$refused, $depth = 0 ) {
 
 		$parent = dirname( $path );
 		if ( '.' !== $parent && ! isset( $entries[ $parent ] ) ) {
-			return;
+			return true;
+		}
+		// Refused entries count too, so a crafted tree can't produce unbounded warnings.
+		if ( count( $entries ) + count( $refused ) >= 1000 ) {
+			$refused[ $path ] = 'the backup holds more than 1000 entries, so this and the rest were not restored';
+
+			return false;
 		}
 		$stat = @lstat( "$source/$path" );
 		if ( ! $stat ) {
-			return;
+			return true;
 		}
 		$type = $stat['mode'] & 0170000;
 		if ( 0040000 !== $type && 0100000 !== $type ) {
 			$refused[ $path ] = 'the backup holds a symlink or special file there';
 
-			return;
+			return true;
 		}
-		if ( count( $entries ) >= 1000 || $depth > 16 ) {
-			$refused[ $path ] = 'the backup holds too many files or directories';
+		if ( $depth > 16 ) {
+			$refused[ $path ] = 'it is nested too deep';
 
-			return;
+			return true;
 		}
 		$entries[ $path ] = $stat;
 		if ( ! $recurse || 0040000 !== $type ) {
-			return;
+			return true;
 		}
-		foreach ( @scandir( "$source/$path" ) ?: [] as $name ) {
+		$handle = @opendir( "$source/$path" );
+		if ( false === $handle ) {
+			return true;
+		}
+		$more = true;
+		while ( $more && false !== ( $name = readdir( $handle ) ) ) {
 			if ( '.' === $name || '..' === $name ) {
 				continue;
 			}
@@ -1842,20 +1858,24 @@ class Site_Backup_Restore {
 				$refused[ $path . '/' . addcslashes( $name, "\0..\37\177" ) ] = 'its name holds control characters';
 				continue;
 			}
-			$this->list_php_conf_backup( $source, "$path/$name", true, $entries, $refused, $depth + 1 );
+			$more = $this->list_php_conf_backup( $source, "$path/$name", true, $entries, $refused, $depth + 1 );
 		}
+		closedir( $handle );
+
+		return $more;
 	}
 
 	/**
 	 * Create a directory or file the site's php config lacks, or set the mode of one, from inside its running php container, where a symlink the container made can't point at the host.
 	 *
-	 * The parent must be a real directory (no symlink in its path) inside the container, and a created entry takes the parent's owner.
+	 * The step runs as the owner of the parent directory, which must be a real directory (no symlink in its path), so it can't change what that owner couldn't, and a created entry belongs to that owner.
 	 *
 	 * @param string      $op      'dir', 'file' or 'mode'.
 	 * @param string      $path    Path below config/php (/usr/local/etc in the container).
 	 * @param string      $mode    Octal permission bits.
 	 * @param string|null $content Content of a created file.
 	 *
+	 * @return bool Whether the mode was set; false when only that failed.
 	 * @throws \Exception
 	 */
 	private function php_container_op( $op, $path, $mode, $content = null ) {
@@ -1877,14 +1897,24 @@ class Site_Backup_Restore {
 			throw new \Exception( 'its php container is not running' );
 		}
 
-		// Run relative to the parent the shell changed into, so a directory swapped above it afterwards can't redirect the change.
+		// Changes into the parent and acts relative to it, so a directory swapped above it afterwards can't redirect the step.
 		$script = 'set -e; op=$2; m=$3; p=$1/$4; d=${p%/*}; n=./${p##*/}
 cd -P -- "$d" 2>/dev/null && [ "$(pwd -P)" = "$d" ] || exit 3
-if [ "$op" = mode ]; then [ ! -L "$n" ] || exit 4; chmod -- "$m" "$n"; exit 0; fi
+if [ "$op" = owner ]; then stat -c %u:%g .; exit 0; fi
+if [ "$op" = mode ]; then [ ! -L "$n" ] || exit 4; chmod -- "$m" "$n" || exit 5; exit 0; fi
 [ ! -e "$n" ] && [ ! -L "$n" ] || exit 4
-o=$(stat -c %u:%g .)
-if [ "$op" = dir ]; then mkdir -m 700 -- "$n"; else (umask 077; set -C; cat > "$n"); fi
-chown -h -- "$o" "$n"; chmod -- "$m" "$n"';
+if [ "$op" = dir ]; then mkdir -m "$m" -- "$n"; exit 0; fi
+(umask 077; set -C; cat > "$n")
+chmod -- "$m" "$n" || exit 5';
+		$run    = function ( $user, $op, $stdin = null ) use ( $path, $mode, $script ) {
+			return EE::launch( sprintf( 'docker exec %s-u %s %s sh -c %s sh /usr/local/etc %s %s %s%s', $stdin ? '-i ' : '', escapeshellarg( $user ), escapeshellarg( $this->php_container_id ), escapeshellarg( $script ), escapeshellarg( $op ), escapeshellarg( $mode ), escapeshellarg( $path ), $stdin ? ' < ' . escapeshellarg( $stdin ) : '' ) );
+		};
+
+		$owner = $run( 'root', 'owner' );
+		$user  = trim( $owner->stdout );
+		if ( 3 === $owner->return_code || ! preg_match( '/^\d+:\d+$/', $user ) ) {
+			throw new \Exception( 'a directory above it is not a real directory in its php container' );
+		}
 
 		$tmp = null;
 		if ( 'file' === $op ) {
@@ -1893,18 +1923,21 @@ chown -h -- "$o" "$n"; chmod -- "$m" "$n"';
 				throw new \Exception( 'could not write a temporary file' );
 			}
 		}
-		$result = EE::launch( sprintf( 'docker exec %s-u root %s sh -c %s sh /usr/local/etc %s %s %s%s', $tmp ? '-i ' : '', escapeshellarg( $this->php_container_id ), escapeshellarg( $script ), escapeshellarg( $op ), escapeshellarg( $mode ), escapeshellarg( $path ), $tmp ? ' < ' . escapeshellarg( $tmp ) : '' ) );
+		$result = $run( $user, $op, $tmp );
 		if ( $tmp ) {
 			unlink( $tmp );
 		}
-		if ( 3 === $result->return_code ) {
-			throw new \Exception( 'a directory above it is not a real directory in its php container' );
-		}
-		if ( 4 === $result->return_code ) {
-			throw new \Exception( 'mode' === $op ? 'it is a symlink in its php container' : 'it appeared in its php container while it was restored' );
-		}
-		if ( $result->return_code ) {
-			throw new \Exception( 'mode' === $op ? 'could not change it in its php container' : 'it is missing in the site and could not be created in its php container' );
+		switch ( $result->return_code ) {
+			case 0:
+				return true;
+			case 5:
+				return false;
+			case 3:
+				throw new \Exception( 'a directory above it is not a real directory in its php container' );
+			case 4:
+				throw new \Exception( 'mode' === $op ? 'it is a symlink in its php container' : 'it appeared in its php container while it was restored' );
+			default:
+				throw new \Exception( 'mode' === $op ? 'could not change it in its php container' : 'it is missing in the site and could not be created in its php container' );
 		}
 	}
 
