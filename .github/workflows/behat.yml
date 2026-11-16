@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - develop
+      - 'tmp/**'
       - master
   workflow_dispatch:
 
@@ -18,7 +19,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CORE_REF: develop
+  # tmp release check: core at the v4.14.0 release commit, packages from its composer.lock.
+  CORE_GIT: https://github.com/mrrobot47/easyengine.git
+  CORE_SHA: 5ca484f2d6909841692abc969ea18597f8bc4131
   COMPOSE_VERSION: v5.5.1
   # Not RCLONE_*: rclone reads those variables as its own flags.
   RCLONE_RELEASE: v1.75.1
@@ -48,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+        php: ['7.4', '8.5']
         lane: [main, wp, le]
         include:
           - lane: main
@@ -113,21 +116,26 @@ jobs:
 
       - name: Set up EasyEngine core
         run: |
-          git clone -q --depth 1 -b "$CORE_REF" https://github.com/EasyEngine/easyengine.git easyengine
+          git init -q easyengine
           cd easyengine
-          # All easyengine/* packages on dev-develop (as core CI does), except the one under test: that's this checkout.
-          php -r '
-            $pkg = json_decode(file_get_contents("../pkg/composer.json"), true)["name"];
-            $j = json_decode(file_get_contents("composer.json"), true);
-            foreach ($j["require"] as $k => $v) if (strpos($k, "easyengine/") === 0) $j["require"][$k] = "dev-develop";
-            $repos = isset($j["repositories"]) ? $j["repositories"] : [];
-            array_unshift($repos, ["type" => "path", "url" => "../pkg", "options" => ["symlink" => false, "versions" => [$pkg => "dev-develop"]]]);
-            $j["repositories"] = $repos;
-            file_put_contents("composer.json", json_encode($j, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
-            file_put_contents(getenv("GITHUB_ENV"), "PKG=$pkg\n", FILE_APPEND);'
-          composer config --json --merge policy.advisories.ignore "$ADVISORY_IGNORE"
-          composer update --prefer-dist --no-progress --no-interaction
-          composer show "$(jq -r .name ../pkg/composer.json)" | grep -E '^(versions|source|dist) ' || true
+          git fetch -q --depth 1 "$CORE_GIT" "$CORE_SHA"
+          git checkout -q FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$CORE_SHA"
+          git log -1 --format='core under test: %H %s'
+          cat VERSION
+          # Every easyengine/* package, the one under test included, at the tag pinned in composer.lock.
+          composer install --prefer-dist --no-progress --no-interaction
+          composer show 'easyengine/*'
+          pkg=$(jq -r .name ../pkg/composer.json)
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+          want=$(jq -r --arg p "$pkg" '.packages[] | select(.name == $p) | .version' composer.lock)
+          got=$(composer show "$pkg" --format=json | jq -r '.versions[0]')
+          echo "under test: $pkg $got (lock $want)"
+          test "${got#v}" = "${want#v}"
+          # The checkout is the tag plus the suite, so its code must equal the installed package.
+          for d in src migrations; do [ ! -d "../pkg/$d" ] || diff -r "../pkg/$d" "vendor/$pkg/$d"; done
+          for f in ../pkg/*.php; do cmp "$f" "vendor/$pkg/$(basename "$f")"; done
+          echo "code identical to the installed $pkg"
           rm -rf features
           cp -R ../pkg/features features
           # Some commands (clone, sync) shell out to `ee` from PATH.
