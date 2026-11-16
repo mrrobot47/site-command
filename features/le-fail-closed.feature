@@ -37,9 +37,9 @@ Feature: A failed Let's Encrypt issuance leaves the site on plain HTTP
     When I send a GET request to "http://www.{LF1}/"
     Then the response code should be 301
     And the response header "Location" should be "http://{LF1}/"
-    # Without HTTPS for the site, nginx-proxy answers its name on 443 with the default certificate and an error.
+    # Without HTTPS for the site, nginx-proxy answers its name on 443 with the default certificate (or rejects the handshake) and 503 (500 before nginx-proxy v4.14.0).
     When I send a GET request to "https://{LF1}/"
-    Then the response code should be 500
+    Then the response code should be 503
     And the response body should not contain "Your html site with EasyEngine"
     When I run 'for c in INPUT DOCKER-USER; do iptables -D $c {MATCH} "Host: www.{LF1}" {REJECT}; done'
     And I run 'bin/ee site update {LF1} --ssl=le'
@@ -94,7 +94,7 @@ Feature: A failed Let's Encrypt issuance leaves the site on plain HTTP
     And the file "{SITES_DIR}/{LF3}/docker-compose.yml" should contain "HTTPS_METHOD=nohttps"
     And the file "{PROXY_DIR}/conf.d/{LF3}-redirect.conf" should not contain "443"
     When I send a GET request to "https://{LF3}/"
-    Then the response code should be 500
+    Then the response code should be 503
     # WordPress was installed with https:// URLs before the certificate step; they are switched back to http.
     When I run 'bin/ee shell {LF3} --skip-tty --command="wp option get home; wp option get siteurl"'
     Then the command should succeed
@@ -144,7 +144,7 @@ Feature: A failed Let's Encrypt issuance leaves the site on plain HTTP
     And STDOUT should not contain "https://"
     When I wait up to 60 seconds for "http://{LF4}/" to return 200
     And I send a GET request to "https://{LF4}/"
-    Then the response code should be 500
+    Then the response code should be 503
     When I run 'bin/ee site update {LF4} --ssl=le'
     Then the command should fail
     And STDERR should contain "Run `ee site ssl-verify {LF4}` once the DNS records have propagated."
