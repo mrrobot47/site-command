@@ -7,6 +7,7 @@
 #   pebble-setup.sh verify     prove EE's HTTP stack reaches Pebble (and cannot reach real LE)
 #   pebble-setup.sh reach      after the EE proxy is up: prove Pebble's VA can fetch http://<target>/ (HTTP-01 path)
 #   pebble-setup.sh logs       print the Pebble, proxy and DNS logs
+#   pebble-setup.sh txt-json F publish the DNS-01 records of `ee site ssl-info <site> --get-dns-records --format=json` output F
 #   pebble-setup.sh teardown   undo everything setup or block did
 #
 # Needs root, docker, openssl, curl, php, iptables and systemd-resolved (GitHub's ubuntu runners have all of them).
@@ -160,9 +161,8 @@ start_containers() {
 	local upstream
 	upstream=$(awk '$1 == "nameserver" && $2 !~ /^127\./ {print $2; exit}' /run/systemd/resolve/resolv.conf 2>/dev/null)
 	[[ -n $upstream ]] || die 'no upstream DNS server found in /run/systemd/resolve/resolv.conf'
-	docker run -d --name ee-pebble-dns --network "$PEBBLE_NET" --ip "$PEBBLE_DNS_IP" "$PEBBLE_DNS_IMAGE" \
-		sh -c "apk add -q --no-cache dnsmasq && exec dnsmasq -k --no-hosts --no-resolv --log-queries --log-facility=- \
-			--server=$upstream --address=/$PEBBLE_DOMAIN/$PEBBLE_TARGET_IP" >/dev/null
+	printf '%s\n' "$upstream" >"$PEBBLE_DIR/dns-upstream"
+	run_dns
 	remember 'docker rm -f ee-pebble-dns'
 	docker run -d --name ee-pebble --network "$PEBBLE_NET" --ip "$PEBBLE_ACME_IP" \
 		-e PEBBLE_VA_NOSLEEP=1 -e PEBBLE_WFE_NONCEREJECT=0 -e PEBBLE_AUTHZREUSE=100 \
@@ -173,6 +173,45 @@ start_containers() {
 		-v "$PEBBLE_DIR:/pebble:ro" -v "$PEBBLE_DIR/front.conf:/etc/nginx/conf.d/default.conf:ro" \
 		"$PEBBLE_PROXY_IMAGE" >/dev/null
 	remember 'docker rm -f ee-pebble-front'
+}
+
+run_dns() {
+	# Extra args: dnsmasq options, e.g. --txt-record=NAME,VALUE for manual DNS-01 challenges.
+	local upstream extra=''
+	upstream=$(cat "$PEBBLE_DIR/dns-upstream")
+	(($#)) && extra=$(printf ' %q' "$@")
+	docker run -d --name ee-pebble-dns --network "$PEBBLE_NET" --ip "$PEBBLE_DNS_IP" "$PEBBLE_DNS_IMAGE" \
+		sh -c "apk add -q --no-cache dnsmasq && exec dnsmasq -k --no-hosts --no-resolv --log-queries --log-facility=- \
+			--server=$upstream --address=/$PEBBLE_DOMAIN/$PEBBLE_TARGET_IP$extra" >/dev/null
+}
+
+cmd_txt_json() {
+	# dnsmasq can't add records at runtime, so the DNS container is recreated with them (same IP, Pebble's VA asks it).
+	need_root
+	local file=${1:?usage: txt-json <ssl-info json file>} args=() name value
+	while IFS=$'\t' read -r name value; do
+		args+=("--txt-record=$name,$value")
+		log "TXT $name = $value"
+	done < <(jq -r '(if type == "array" then .[0] else . end) | .dns_challenges[] | [.record_name, .record_value] | @tsv' "$file")
+	((${#args[@]})) || die "no DNS challenges in $file"
+	docker rm -f ee-pebble-dns >/dev/null
+	run_dns "${args[@]}"
+	wait_for 'the Pebble DNS' docker exec ee-pebble-dns pidof dnsmasq
+	for name in $(jq -r '(if type == "array" then .[0] else . end) | .dns_challenges[].record_name' "$file" | sort -u); do
+		wait_for "TXT $name" sh -c "docker exec ee-pebble-dns nslookup -type=TXT $name 127.0.0.1 | grep -q text"
+	done
+	# EE's own check (acmephp's LibDnsResolver) asks 8.8.8.8 and then the zone's public nameservers directly; send every
+	# non-local DNS query from the runner to the harness DNS, which forwards everything but the test domain.
+	local rule="-p udp --dport 53 ! -d $PEBBLE_DNS_IP -m addrtype ! --dst-type LOCAL -j DNAT --to-destination $PEBBLE_DNS_IP:53"
+	if ! iptables -t nat -C OUTPUT $rule 2>/dev/null; then
+		iptables -t nat -I OUTPUT $rule
+		remember "iptables -t nat -D OUTPUT $rule"
+		# Alpine's dnsmasq.conf sets local-service: queries must come from the bridge's subnet.
+		local snat="-o $PEBBLE_BRIDGE -d $PEBBLE_DNS_IP -p udp --dport 53 -j SNAT --to-source $PEBBLE_GATEWAY"
+		iptables -t nat -I POSTROUTING $snat
+		remember "iptables -t nat -D POSTROUTING $snat"
+		log "runner DNS queries now go to $PEBBLE_DNS_IP"
+	fi
 }
 
 allow_va_forwarding() {
@@ -236,8 +275,8 @@ write_env() {
 	issuer=$(openssl x509 -in "$PEBBLE_DIR/pebble-intermediate.pem" -noout -subject -nameopt multiline |
 		sed -n 's/^ *commonName *= *//p')
 	[[ -n $issuer ]] || die 'could not read the Pebble intermediate CN'
-	printf 'EE_BEHAT_LE_ISSUER=%s\nEE_BEHAT_LE_DNS_SERVER=127.0.0.53\nEE_BEHAT_PEBBLE_ROOT=%s\n' \
-		"$issuer" "$PEBBLE_DIR/pebble-root.pem" >"$PEBBLE_DIR/env"
+	printf 'EE_BEHAT_LE_ISSUER=%s\nEE_BEHAT_LE_DNS_SERVER=127.0.0.53\nEE_BEHAT_PEBBLE_ROOT=%s\nEE_BEHAT_PEBBLE_SETUP=%s\n' \
+		"$issuer" "$PEBBLE_DIR/pebble-root.pem" "$(readlink -f "$0")" >"$PEBBLE_DIR/env"
 	if [[ -n ${GITHUB_ENV:-} ]]; then
 		cat "$PEBBLE_DIR/env" >>"$GITHUB_ENV"
 	fi
@@ -392,9 +431,10 @@ case ${1:-} in
 	verify) cmd_verify ;;
 	reach) cmd_reach ;;
 	logs) cmd_logs ;;
+	txt-json) cmd_txt_json "${2:-}" ;;
 	teardown) cmd_teardown ;;
 	*)
-		sed -n '2,13p' "$0" >&2
+		sed -n '2,14p' "$0" >&2
 		exit 2
 		;;
 esac

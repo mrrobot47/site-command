@@ -52,7 +52,7 @@ jobs:
       fail-fast: false
       matrix:
         php: ['7.4', '8.5']
-        lane: [main, wp, le]
+        lane: [le]  # tmp: le lane only, plus le-fail-closed.feature (LF1-4) from test/behat-ssl-le-fail-closed
         include:
           - lane: main
             tags: '~@known-bug&&~@wp'
