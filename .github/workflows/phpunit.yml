@@ -1,0 +1,123 @@
+# PHPUnit layer of an EasyEngine package, run inside a core checkout (the package installed via a path repository).
+# Fast gate (no Docker): the Behat workflow can call it (`uses: ./.github/workflows/phpunit.yml`) and `needs:` it.
+name: PHPUnit
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop
+      - 'tmp/**'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phpunit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CORE_REPO: mrrobot47/easyengine
+  CORE_REF: tmp/final-4140-pu4133
+
+jobs:
+  phpunit:
+    name: PHPUnit (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.5']
+    steps:
+      - name: Check out the package
+        uses: actions/checkout@v7
+        with:
+          path: pkg
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer
+          extensions: pcntl, curl, sqlite3, pdo_sqlite, zip, dom, mbstring, json
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config -g cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Composer caching
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-phpunit-php${{ matrix.php }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-composer-phpunit-php${{ matrix.php }}-
+
+      - name: Set up EasyEngine core
+        run: |
+          git clone -q --depth 1 -b "$CORE_REF" "https://github.com/$CORE_REPO.git" easyengine
+          cd easyengine
+          git log --oneline -1
+          cat VERSION
+          # Release check: every easyengine/* package, the one under test included, at the tag pinned in composer.lock.
+          composer install --prefer-dist --no-progress --no-interaction
+          composer show 'easyengine/*'
+          pkg=$(jq -r .name ../pkg/composer.json)
+          want=$(jq -r --arg p "$pkg" '.packages[] | select(.name == $p) | .version' composer.lock)
+          got=$(composer show "$pkg" --format=json | jq -r '.versions[0]')
+          echo "under test: $pkg $got (lock $want)"
+          test "${got#v}" = "${want#v}"
+          # The checkout is the tag plus the tests, so its src/ and migrations/ must equal the installed package.
+          for d in src migrations; do [ ! -d "../pkg/$d" ] || diff -r "../pkg/$d" "vendor/$pkg/$d"; done
+          test -f tests/phpunit/bootstrap.php || { echo "::error::$CORE_REPO@$CORE_REF has no tests/phpunit (the core PHPUnit layer must land first)"; exit 1; }
+
+      - name: Run PHPUnit
+        working-directory: easyengine
+        run: |
+          mkdir -p "$RUNNER_TEMP/phpunit"
+          php -d auto_prepend_file=tests/phpunit/prepend.php vendor/bin/phpunit -c ../pkg/phpunit.xml.dist --log-junit "$RUNNER_TEMP/phpunit/junit.xml"
+
+      # Tests pinning open bugs: expected to fail, never gating. A pass means the bug is fixed (drop the group) or the test is vacuous.
+      - name: Run known-bug tests
+        if: always()
+        working-directory: easyengine
+        run: |
+          php -d auto_prepend_file=tests/phpunit/prepend.php vendor/bin/phpunit -c ../pkg/phpunit.xml.dist --group known-bug --log-junit "$RUNNER_TEMP/phpunit/known-bug.xml" || true
+
+      - name: Summarise
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/phpunit" <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          out, lines = sys.argv[1], []
+          for name in ('junit', 'known-bug'):
+              path = os.path.join(out, name + '.xml')
+              if not os.path.exists(path):
+                  print('::warning title=PHPUnit::no %s results' % name)
+                  continue
+              cases = list(ET.parse(path).getroot().iter('testcase'))
+              bad = [c for c in cases if c.find('failure') is not None or c.find('error') is not None]
+              skipped = [c for c in cases if c.find('skipped') is not None]
+              lines.append('%s: %d tests, %d failed, %d skipped' % (name, len(cases), len(bad), len(skipped)))
+              for c in (cases if name == 'known-bug' else []):
+                  if c not in bad and c not in skipped:
+                      title = '%s::%s' % (c.get('class'), c.get('name'))
+                      print('::warning title=known-bug passed::%s' % title)
+                      lines.append('- known-bug PASSED: `%s`' % title)
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          text = '### PHPUnit (PHP ${{ matrix.php }})\n\n' + '\n'.join(lines) + '\n'
+          print(text)
+          if summary:
+              open(summary, 'a').write(text)
+          PY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phpunit-php${{ matrix.php }}
+          path: ${{ runner.temp }}/phpunit
+          retention-days: 14

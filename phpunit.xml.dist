@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Runs from a core checkout: php -d auto_prepend_file=tests/phpunit/prepend.php vendor/bin/phpunit -c <this package>/phpunit.xml.dist -->
+<phpunit
+	bootstrap="tests/phpunit/bootstrap.php"
+	colors="true"
+	beStrictAboutOutputDuringTests="true"
+	failOnRisky="true"
+	failOnWarning="true"
+	cacheResult="false"
+	>
+	<testsuites>
+		<testsuite name="site-command">
+			<directory suffix="Test.php">tests/phpunit</directory>
+		</testsuite>
+	</testsuites>
+	<groups>
+		<exclude>
+			<!-- Tests pinning open bugs; run with: - -group known-bug -->
+			<group>known-bug</group>
+		</exclude>
+	</groups>
+</phpunit>
