@@ -1799,9 +1799,14 @@ class Site_Backup_Restore {
 			} catch ( \Exception $e ) {
 				$not_restored[ $path ] = $not_restored[ $path ] ?? $path;
 				$message               = "Could not restore config/php/$path ({$e->getMessage()}).";
-				if ( null !== $content ) {
+				if ( ! $is_dir ) {
 					try {
-						$this->fs->dumpFile( "$kept/$path", $content );
+						// A file that failed the read (e.g. over the size cap) is copied as is, so it doesn't go with the backup dir.
+						if ( null === $content ) {
+							$this->fs->copy( "$source/$path", "$kept/$path" );
+						} else {
+							$this->fs->dumpFile( "$kept/$path", $content );
+						}
 						$fix      = isset( $not_restored[ $parent ] ) ? "once config/php/{$not_restored[ $parent ]} is a plain directory again" : 'once the cause is fixed';
 						$message .= " The backed-up file is kept as $kept/$path; put it back $fix, then run: ee site reload $site_url";
 					} catch ( \Exception $dump_error ) {
