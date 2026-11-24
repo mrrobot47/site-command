@@ -245,6 +245,15 @@ abstract class EE_Site_Command {
 
 		\EE::confirm( sprintf( 'Are you sure you want to delete %s?', $this->site_data['site_url'] ), $assoc_args );
 
+		// A running php-compat check mounts the site's code: stop it first, and drop what php-compat keeps for the site.
+		$compat = ( new Site_PHP_Compat() )->stop_for_delete(
+			(object) $this->site_data,
+			function_exists( 'pcntl_signal_dispatch' ) ? 'pcntl_signal_dispatch' : null
+		);
+		if ( null !== $compat ) {
+			\EE::error( sprintf( 'Could not stop the php-compat check of %s (%s). Nothing was deleted.', $this->site_data['site_url'], $compat ) );
+		}
+
 		if ( $this->site_data['site_ssl'] ) {
 			$all_domains = array_unique( array_merge(
 					explode( ',', $this->site_data['alias_domains'] ),
@@ -1136,7 +1145,7 @@ abstract class EE_Site_Command {
 	 *
 	 * @param string $volume Real path of config/php.
 	 *
-	 * @throws \Exception When a running container still mounts it.
+	 * @throws \Exception When a running container still mounts it, or the containers that mount it can't be listed.
 	 */
 	private static function check_config_volume_unused( $volume ) {
 
@@ -1144,12 +1153,24 @@ abstract class EE_Site_Command {
 			return;
 		}
 		$users = EE::launch( 'docker ps -q --filter ' . escapeshellarg( 'volume=' . basename( dirname( $volume ) ) ) );
-		$ids   = preg_split( '/\s+/', trim( $users->stdout ), -1, PREG_SPLIT_NO_EMPTY );
+		if ( $users->return_code ) {
+			$error = trim( $users->stderr );
+			throw new \Exception( 'Could not list the containers that mount the php config volume: ' . ( '' === $error ? 'docker ps exited with code ' . $users->return_code : $error ) . '; re-run the update once docker responds.' );
+		}
+		$ids = preg_split( '/\s+/', trim( $users->stdout ), -1, PREG_SPLIT_NO_EMPTY );
 		// docker ps can still list a container stopped a moment ago; inspect waits for the engine to record the stop.
 		$ids = array_filter( $ids, function ( $id ) {
-			return 'exited' !== \EE_DOCKER::container_status( $id );
+			$status = \EE_DOCKER::container_status( $id );
+			if ( false === $status ) {
+				// inspect also fails for a container removed since the listing; drop it only if a working listing no longer has it.
+				$all = EE::launch( 'docker ps -aq --no-trunc --filter ' . escapeshellarg( 'id=' . $id ) );
+
+				return $all->return_code || '' !== trim( $all->stdout );
+			}
+
+			return 'exited' !== $status;
 		} );
-		if ( $users->return_code || $ids ) {
+		if ( $ids ) {
 			throw new \Exception( 'The php config volume is still mounted by a running container (' . implode( ', ', $ids ) . '); stop it and re-run the update.' );
 		}
 	}
@@ -1864,7 +1885,7 @@ abstract class EE_Site_Command {
 						// A manual DNS-01 challenge keeps site_ssl without a certificate until `ee site ssl-verify` completes it.
 						if ( \EE\Site\Utils\is_le_ssl_pending( $this->site_data['site_url'], $this->site_data['site_ssl'] ) ) {
 							$this->serve_without_https( $containers_to_start );
-							EE::log( sprintf( '%1$s is served over HTTP until `ee site ssl-verify %1$s` succeeds.', $this->site_data['site_url'] ) );
+							EE::log( sprintf( '%1$s is served over HTTP until `%2$s` succeeds.', $this->site_data['site_url'], $this->ssl_verify_command( $this->site_data['site_url'], $force ) ) );
 
 							return;
 						}
@@ -2309,7 +2330,7 @@ abstract class EE_Site_Command {
 
 		$preferred_challenge = get_preferred_ssl_challenge( $domains );
 
-		if ( ! $client->check( $domains, $this->site_data['site_ssl_wildcard'], $preferred_challenge ) ) {
+		if ( ! $client->check( $domains, $this->site_data['site_ssl_wildcard'], $preferred_challenge, $force ) ) {
 			$is_solver_dns   = ( $this->site_data['site_ssl_wildcard'] || 'dns' === $preferred_challenge ) ? true : false;
 			$api_key_present = ! empty( get_config_value( 'cloudflare-api-key' ) );
 
@@ -2320,7 +2341,7 @@ abstract class EE_Site_Command {
 			}
 			// During a create, update or renewal, the caller says how to retry.
 			if ( ! $called_by_ee ) {
-				EE::warning( sprintf( 'Check logs and retry `ee site ssl-verify %s` once the issue is resolved.', $this->site_data['site_url'] ) );
+				EE::warning( sprintf( 'Check logs and retry `%s` once the issue is resolved.', $this->ssl_verify_command( $this->site_data['site_url'], $force ) ) );
 			}
 
 			return false;
@@ -3351,7 +3372,23 @@ abstract class EE_Site_Command {
 		$args                   = auto_site_name( $args, 'site', 'php-compat' );
 		$this->site_data        = get_site_info( $args, false, true, false );
 		$this->php_compat_check = new Site_PHP_Compat();
-		// Dispatched from this class's scope: the SIGTERM/SIGINT handlers are the site type's protected rollback().
+		// A check changes nothing to roll back: on a signal, say what happens and exit; the shutdown handler stops the check.
+		if ( function_exists( 'pcntl_signal' ) ) {
+			$stop = function () {
+				\EE::warning( 'Stopping the check: removing its container and temporary files.' );
+				exit( 1 );
+			};
+			foreach ( [ SIGTERM, SIGINT, SIGUSR1 ] as $signal ) {
+				pcntl_signal( $signal, $stop );
+			}
+			// A lost terminal doesn't stop a check (PHP can't see nohup's ignore); it ends and cleans up on its own, or with --cancel.
+			pcntl_signal(
+				SIGHUP,
+				function () {
+					\EE::debug( 'Hangup received; the check goes on. Stop it with --cancel.' );
+				}
+			);
+		}
 		$this->php_compat_check->run(
 			$this->site_data,
 			$assoc_args,
