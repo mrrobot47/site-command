@@ -23,6 +23,11 @@ class Site_PHP_Compat {
 	// Docker's own start and teardown on top of the container's deadline, which normally fires first.
 	const PROCESS_MARGIN = 60;
 	const PULL_TIMEOUT   = 1800;
+	// Estimate tuning passed to the scanner (its defaults: 0.1 and 1.5), from runner and host measurements on 2026-11-24.
+	const ESTIMATE_SECONDS_PER_BATCH = '0.5';
+	const ESTIMATE_HIGH_FACTOR       = '2.5';
+	// Refreshing a tag that is already local; past it the local copy serves.
+	const REPULL_TIMEOUT = 300;
 	// How long --cancel waits for the stopped scan to clean up and release the site lock.
 	const CANCEL_WAIT = 60;
 	// A live scan takes the request within about 0.2 s; one that hasn't after this can't act on it.
@@ -69,6 +74,21 @@ class Site_PHP_Compat {
 
 	/** @var string|null Path argument for the scanner (under /var/www), set by resolve_layout(). */
 	protected $scan_path;
+
+	/** @var string[] --mount arguments for code the site's php container gets from mounts below /var/www. */
+	protected $extra_mounts = [];
+
+	/** @var string|null Status of this scan's result, so cleanup() knows whether a late --cancel can still be honoured. */
+	protected $result_status;
+
+	/** @var resource|null The site lock `ee site delete` keeps until it ends. */
+	protected $delete_lock;
+
+	/** @var resource|null An estimate lock held while `ee site delete` removes it. */
+	protected $estimate_lock;
+
+	/** @var bool Whether cleanup() took a --cancel request that arrived after the scan's last check. */
+	protected $late_cancel = false;
 
 	/** @var string|null Host directory the scan looked in, for the no_code_found text; null when app/ is missing. */
 	protected $looked_in;
@@ -118,10 +138,16 @@ class Site_PHP_Compat {
 	 */
 	public function run( $site_data, array $assoc_args, $dispatch = null ) {
 
-		$this->site     = $site_data->site_url;
+		$this->site = $site_data->site_url;
+		// `--estimate=false` is the string "false": only a bare flag (or --no-<flag>) is a switch.
+		foreach ( [ 'estimate', 'cancel' ] as $key ) {
+			if ( ! is_bool( get_flag_value( $assoc_args, $key, false ) ) ) {
+				EE::error( "--$key doesn't take a value." );
+			}
+		}
 		$this->target   = (string) get_flag_value( $assoc_args, 'php', '' );
-		$this->estimate = (bool) get_flag_value( $assoc_args, 'estimate', false );
-		$this->cancel   = (bool) get_flag_value( $assoc_args, 'cancel', false );
+		$this->estimate = true === get_flag_value( $assoc_args, 'estimate', false );
+		$this->cancel   = true === get_flag_value( $assoc_args, 'cancel', false );
 		$format         = get_flag_value( $assoc_args, 'format', 'table' );
 		$output         = get_flag_value( $assoc_args, 'output', null );
 		$timeout        = get_flag_value( $assoc_args, 'timeout', null );
@@ -191,9 +217,14 @@ class Site_PHP_Compat {
 				if ( 'ok' !== $result['doc']['status'] && $this->cancel_requested() ) {
 					$result = $this->cancelled();
 				}
+				$this->result_status = $result['doc']['status'];
 			}
 		} finally {
 			$this->cleanup();
+		}
+		if ( $this->late_cancel ) {
+			// The request came while this scan cleaned up; --cancel reads its removal as stopped, so say the same.
+			$result = $this->doc( 'cancelled' );
 		}
 
 		if ( 'json' === $format ) {
@@ -337,8 +368,13 @@ class Site_PHP_Compat {
 			}
 		}
 
-		if ( ! $this->ensure_image( $image ) ) {
-			return $this->doc( 'tool_error', 'image pull failed' );
+		$pull = $this->ensure_image( $image );
+		if ( null !== $pull ) {
+			return $this->doc( 'tool_error', $pull );
+		}
+		$mounts = $this->extra_mounts( $site_data, $code );
+		if ( is_string( $mounts ) ) {
+			return $this->doc( 'tool_error', $mounts );
 		}
 
 		$out = $this->make_temp_dir();
@@ -389,7 +425,7 @@ class Site_PHP_Compat {
 		try {
 			self::raise_memory_limit();
 			$raw = \EE\Site\Utils\get_container_file_contents( $file, $out, self::REPORT_MAX );
-			if ( self::decode_cost( $raw ) > $this->memory_available() ) {
+			if ( ! $this->make_room( self::decode_cost( $raw ) ) ) {
 				return $this->doc( 'tool_error', sprintf( 'the report (%s) needs more memory to read than is available', self::size( strlen( $raw ) ) ) );
 			}
 			$report = json_decode( $raw, true, 512, self::JSON_UTF8 );
@@ -452,8 +488,13 @@ class Site_PHP_Compat {
 		if ( ! $locked ) {
 			return $this->doc( 'busy' );
 		}
-		if ( ! $this->ensure_image( $image ) ) {
-			return $this->doc( 'tool_error', 'image pull failed' );
+		$pull = $this->ensure_image( $image );
+		if ( null !== $pull ) {
+			return $this->doc( 'tool_error', $pull );
+		}
+		$mounts = $this->extra_mounts( $site_data, $code );
+		if ( is_string( $mounts ) ) {
+			return $this->doc( 'tool_error', $mounts );
 		}
 
 		$run = $this->docker( $this->docker_run_args( 'estimate', $image, $site_data, $code ), self::ESTIMATE_TIMEOUT + self::PROCESS_MARGIN, true );
@@ -491,6 +532,9 @@ class Site_PHP_Compat {
 		$name    = 'ee-php-compat-' . $this->site;
 		$marker  = $this->cancel_path( $parent );
 		$stopped = false;
+		if ( null === $marker ) {
+			return $this->doc( 'tool_error', 'could not create the temporary directory' );
+		}
 		$this->hold_cancel_guard( $marker );
 
 		if ( ! $this->lock_site( $site_data->site_fs_path ) ) {
@@ -555,10 +599,31 @@ class Site_PHP_Compat {
 	 *
 	 * @param string $parent temp_parent().
 	 *
-	 * @return string
+	 * @return string|null
 	 */
 	protected function cancel_path( $parent ) {
-		return "$parent/.cancel-{$this->site}";
+		return $this->control_path( $parent, 'cancel' );
+	}
+
+	/**
+	 * A per-site control file, one directory per kind, so no site name can collide with another site's file of another kind.
+	 *
+	 * @param string $parent temp_parent().
+	 * @param string $kind   cancel, cancel-lock or estimate-lock.
+	 *
+	 * @return string|null
+	 */
+	protected function control_path( $parent, $kind ) {
+		return $this->own_dir( "$parent/.$kind" ) ? "$parent/.$kind/{$this->site}" : null;
+	}
+
+	/**
+	 * @param string $marker cancel_path().
+	 *
+	 * @return string The guard file of that request.
+	 */
+	protected static function guard_path( $marker ) {
+		return dirname( $marker, 2 ) . '/.cancel-lock/' . basename( $marker );
 	}
 
 	/**
@@ -568,7 +633,7 @@ class Site_PHP_Compat {
 	 * @param string $marker cancel_path().
 	 */
 	protected function hold_cancel_guard( $marker ) {
-		$guard = @fopen( "$marker.lock", 'c' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- handled below.
+		$guard = $this->own_dir( dirname( self::guard_path( $marker ) ) ) ? @fopen( self::guard_path( $marker ), 'c' ) : false; // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- handled below.
 		if ( false === $guard ) {
 			return;
 		}
@@ -592,7 +657,7 @@ class Site_PHP_Compat {
 	 */
 	protected function clear_stale_cancel() {
 		// Not created here: a --cancel creates it before its request, so while it is missing any request is a live one.
-		$guard = @fopen( $this->cancel_marker . '.lock', 'r' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- missing is handled.
+		$guard = @fopen( self::guard_path( $this->cancel_marker ), 'r' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- missing is handled.
 		if ( false === $guard ) {
 			return;
 		}
@@ -610,7 +675,8 @@ class Site_PHP_Compat {
 	 */
 	protected function request_cancel( $marker ) {
 		$token = bin2hex( random_bytes( 8 ) );
-		$tmp   = "$marker.$token";
+		// A leading dot: never a site name.
+		$tmp = dirname( $marker ) . '/.' . basename( $marker ) . ".$token";
 		if ( false === @file_put_contents( $tmp, $token ) || ! @rename( $tmp, $marker ) ) { // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- reported as tool_error.
 			@unlink( $tmp ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
 			return null;
@@ -712,6 +778,11 @@ class Site_PHP_Compat {
 			'-e', 'COMPAT_SITE=' . $this->site, '-e', 'COMPAT_IMAGE=' . $image, '-e', 'COMPAT_REPORT_MAX=' . self::REPORT_MAX,
 			'--mount', "type=bind,src=$code,dst=/var/www,readonly"
 		);
+		if ( 'estimate' === $mode ) {
+			// The byte model misses PHPCS's per-file cost on dense many-file trees (2x short seen): more per batch, wider top end.
+			array_push( $args, '-e', 'COMPAT_SECONDS_PER_BATCH=' . self::ESTIMATE_SECONDS_PER_BATCH, '-e', 'COMPAT_HIGH_FACTOR=' . self::ESTIMATE_HIGH_FACTOR );
+		}
+		$args = array_merge( $args, $this->extra_mounts );
 		if ( 'scan' === $mode ) {
 			array_push( $args, '--mount', "type=bind,src=$out,dst=/out" );
 		}
@@ -740,7 +811,13 @@ class Site_PHP_Compat {
 	 * @return string|null Real path, or null when it isn't a directory.
 	 */
 	protected function code_dir( $site_fs_path ) {
-		$real = realpath( $site_fs_path . '/app' );
+		$app  = $site_fs_path . '/app';
+		$real = realpath( $app );
+		if ( false === $real && is_link( $app ) && preg_match( '#/volumes/([A-Za-z0-9][A-Za-z0-9_.-]*)/_data/?$#D', (string) readlink( $app ), $m ) ) {
+			// The link holds Docker's root dir of when the volume was made; ask Docker where the volume is now.
+			$run  = $this->docker( [ 'docker', 'volume', 'inspect', '--format', '{{.Mountpoint}}', $m[1] ], 60 );
+			$real = 0 === $run['code'] && '' !== trim( $run['stdout'] ) ? realpath( trim( $run['stdout'] ) ) : false;
+		}
 
 		return ( false !== $real && is_dir( $real ) ) ? $real : null;
 	}
@@ -761,13 +838,19 @@ class Site_PHP_Compat {
 
 		$this->scan_path = $served;
 		if ( 'wp' !== $site_data->site_type ) {
-			// The scanner checks all of htdocs for php sites, whatever the root.
+			// The scanner checks all of htdocs for php sites, whatever the root; through current/ it skips the old releases.
+			if ( is_link( "$code/$rel/current" ) ) {
+				$this->scan_path = "$served/current";
+			}
 			$this->looked_in = $app . 'htdocs';
 			return null;
 		}
 
 		$this->wp_layout = true;
 		$root            = $this->wp_root( $code, $rel );
+		if ( is_string( $root ) && 0 === strpos( $root, '!' ) ) {
+			return $this->doc( 'tool_error', substr( $root, 1 ) );
+		}
 		if ( null === $root ) {
 			// No WordPress found here; a wp-config that moves its code elsewhere still rules out no_code_found.
 			$root = $rel;
@@ -781,6 +864,101 @@ class Site_PHP_Compat {
 	}
 
 	/**
+	 * Code the site's php container gets from mounts below /var/www (docker-compose-custom.yml, user-docker-compose/), mounted
+	 * read-only at the same place so the scanner sees what PHP runs.
+	 *
+	 * @param object $site_data Site record.
+	 * @param string $code      Real path of the site's app/.
+	 *
+	 * @return array|string --mount arguments, or a tool_error detail.
+	 */
+	protected function extra_mounts( $site_data, $code ) {
+		$this->extra_mounts = [];
+		$ps                 = $this->docker( [ 'docker', 'ps', '-q', '--no-trunc', '--filter', 'label=io.easyengine.site=' . $this->site, '--filter', 'label=com.docker.compose.service=php' ], 60 );
+		if ( 0 !== $ps['code'] ) {
+			return 'could not list the site\'s php container: ' . self::first_line( $ps['stderr'] );
+		}
+		$ids = preg_split( '/\s+/', trim( $ps['stdout'] ), -1, PREG_SPLIT_NO_EMPTY );
+		if ( ! $ids ) {
+			// Not running (a disabled site): only its compose files say what it mounts.
+			foreach ( array_merge( [ $site_data->site_fs_path . '/docker-compose-custom.yml' ], (array) glob( $site_data->site_fs_path . '/user-docker-compose/*.yml' ), (array) glob( $site_data->site_fs_path . '/user-docker-compose/*.yaml' ) ) as $file ) {
+				$targets = is_file( $file ) ? self::compose_targets( $file ) : [];
+				if ( null === $targets ) {
+					return "could not read the volumes in $file; enable the site so this check can see its mounts";
+				}
+				foreach ( $targets as $target ) {
+					if ( ! is_string( $target ) || false !== strpos( $target, '$' ) || 0 === strpos( rtrim( $target, '/' ) . '/', '/var/www/' ) ) {
+						return "$file mounts code below /var/www, which this check can only see while the site runs; enable the site and run it again";
+					}
+				}
+			}
+
+			return [];
+		}
+		$inspect = $this->docker( [ 'docker', 'inspect', '--format', '{{json .Mounts}}', $ids[0] ], 60 );
+		$mounts  = 0 === $inspect['code'] ? json_decode( trim( $inspect['stdout'] ), true ) : null;
+		if ( ! is_array( $mounts ) ) {
+			return 'could not read the mounts of the site\'s php container';
+		}
+		foreach ( $mounts as $mount ) {
+			$dst = isset( $mount['Destination'] ) ? rtrim( (string) $mount['Destination'], '/' ) : '';
+			if ( 0 !== strpos( $dst, '/var/www/' ) ) {
+				continue;
+			}
+			$src = isset( $mount['Source'] ) ? (string) $mount['Source'] : '';
+			// The mount point is in the htdocs volume (Docker made it there), so the read-only bind below can use it.
+			if ( '' === $src || false !== strpbrk( $src . $dst, ",\"\n\r" ) || ! file_exists( $src ) || null === self::resolve_in( $code, substr( $dst, strlen( '/var/www/' ) ) ) ) {
+				return 'the site\'s php container mounts ' . self::clean( $dst ) . ' from ' . self::clean( $src ) . ', which this check can\'t mount';
+			}
+			// The WordPress root and its config are read on the host before the scan: only a mount inside wp-content leaves them as read.
+			if ( $this->wp_layout && ! preg_match( '#/wp-content(/|$)#', $dst ) ) {
+				return 'the site\'s php container mounts ' . self::clean( $dst ) . ' over the WordPress files, which this check reads before it scans';
+			}
+			EE::debug( "php-compat: also mounting $src at $dst" );
+			array_push( $this->extra_mounts, '--mount', "type=bind,src=$src,dst=$dst,readonly" );
+		}
+
+		return $this->extra_mounts;
+	}
+
+	/**
+	 * Container paths the volumes of the services in a compose file mount at (short `src:dst[:mode]` or long form).
+	 *
+	 * @param string $file Compose file.
+	 *
+	 * @return array|null Targets (any value that isn't a plain path is returned as is, to be refused), or null when the
+	 *                    file can't be parsed.
+	 */
+	protected static function compose_targets( $file ) {
+		try {
+			$doc = \Symfony\Component\Yaml\Yaml::parseFile( $file );
+		} catch ( \Exception $e ) {
+			return null;
+		}
+		if ( null === $doc ) {
+			return [];
+		}
+		if ( ! is_array( $doc ) || ( isset( $doc['services'] ) && ! is_array( $doc['services'] ) ) ) {
+			return null;
+		}
+		$targets = [];
+		foreach ( isset( $doc['services'] ) ? $doc['services'] : [] as $service ) {
+			foreach ( is_array( $service ) && isset( $service['volumes'] ) ? (array) $service['volumes'] : [] as $volume ) {
+				if ( is_array( $volume ) ) {
+					$targets[] = isset( $volume['target'] ) ? $volume['target'] : null;
+				} elseif ( is_string( $volume ) ) {
+					$parts     = explode( ':', $volume );
+					$targets[] = count( $parts ) > 1 ? $parts[1] : $parts[0];
+				} else {
+					$targets[] = null;
+				}
+			}
+		}
+
+		return $targets;
+	}
+
+	/**
 	 * The root nginx serves (main.conf), or the public directory in EE's record when that can't be read.
 	 *
 	 * @param object $site_data Site record.
@@ -788,12 +966,13 @@ class Site_PHP_Compat {
 	 * @return string Path under /var/www/htdocs.
 	 */
 	protected function served_root( $site_data ) {
-		$db   = rtrim( (string) $site_data->site_container_fs_path, '/' );
+		// `--public-dir=a//b` is stored as given; the scanner refuses `//`.
+		$db   = rtrim( preg_replace( '#/+#', '/', (string) $site_data->site_container_fs_path ), '/' );
 		$db   = '' === $db ? '/var/www/htdocs' : $db;
 		$conf = $this->nginx_conf;
 		$text = is_file( $conf ) && filesize( $conf ) <= self::CONFIG_MAX ? @file_get_contents( $conf ) : false; // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- false is handled.
 		// Exactly one root, as EE writes it; anything else is a config this check doesn't guess at.
-		$root = ( false !== $text && 1 === preg_match_all( '/^\s*root\s+([^\s;]+)\s*;/m', $text, $m ) ) ? rtrim( $m[1][0], '/' ) : null;
+		$root = ( false !== $text && 1 === preg_match_all( '/^\s*root\s+([^\s;]+)\s*;/m', $text, $m ) ) ? rtrim( preg_replace( '#/+#', '/', $m[1][0] ), '/' ) : null;
 		if ( null === $root || ! preg_match( self::ROOT_PATTERN, $root ) ) {
 			EE::debug( "php-compat: no usable root in $conf; using the public directory $db" );
 			return $db;
@@ -806,15 +985,25 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * WordPress root relative to app/: the served root or its current/ (as backup finds it), else wp-cli.yml's path.
+	 * WordPress root relative to app/: where the served index.php loads WordPress from, the served root or its current/ (as
+	 * backup finds it), else wp-cli.yml's path.
 	 *
 	 * @param string $code Real path of the site's app/.
 	 * @param string $rel  Served root relative to app/.
 	 *
-	 * @return string|null
+	 * @return string|null The root, null when none is found, or `!<detail>` when the served index.php loads WordPress from
+	 *                     somewhere this check can't follow.
 	 */
 	protected function wp_root( $code, $rel ) {
+		$loader     = $this->index_wp_root( $code, $rel );
 		$candidates = \EE\Site\Utils\get_wp_root_candidates( $rel );
+		if ( false === $loader ) {
+			return "!can't resolve where {$rel}/index.php loads WordPress (wp-blog-header.php) from";
+		}
+		if ( null !== $loader ) {
+			// What is actually served is the only candidate: a stale copy elsewhere must not stand in for it.
+			$candidates = [ $loader ];
+		}
 		foreach ( array_unique( [ $rel, 'htdocs' ] ) as $dir ) {
 			$path = $this->wp_cli_path( $code, $dir );
 			if ( null !== $path ) {
@@ -829,6 +1018,74 @@ class Site_PHP_Compat {
 					return $candidate;
 				}
 			}
+		}
+
+		return null === $loader ? null : "!{$rel}/index.php loads WordPress from {$loader}, which holds no WordPress";
+	}
+
+	/**
+	 * The directory the served index.php loads wp-blog-header.php from (WordPress in its own directory), read without
+	 * running it.
+	 *
+	 * @param string $code Real path of the site's app/.
+	 * @param string $rel  Served root relative to app/.
+	 *
+	 * @return string|false|null Relative to app/; null when index.php doesn't load WordPress, false when it does but not in
+	 *                           a form this check reads.
+	 */
+	protected function index_wp_root( $code, $rel ) {
+		$index  = self::resolve_in( $code, "$rel/index.php" );
+		$source = null === $index ? null : $this->read_site_file( $code, "$rel/index.php" );
+		$loads  = null === $source ? null : self::loaded_from( $source, 'wp-blog-header.php' );
+		if ( ! is_array( $loads ) ) {
+			return $loads;
+		}
+		list( $path, $from_dir ) = $loads;
+		if ( '/' === substr( $path, 0, 1 ) && ! $from_dir ) {
+			if ( 0 !== strpos( $path, '/var/www/' ) ) {
+				return false;
+			}
+			$path = substr( $path, strlen( '/var/www/' ) );
+		} else {
+			// __DIR__, or a relative path, which PHP-FPM resolves from the script's own directory: the real one. The served
+			// path stands in for it (keeping a current/ link for the scanner) only when it is that same directory and no `..`.
+			$real = dirname( substr( $index, strlen( $code ) + 1 ) );
+			$base = ! preg_match( '#(^|/)\.\.(/|$)#', $path ) && self::resolve_in( $code, $rel ) === dirname( $index ) ? $rel : $real;
+			$path = $base . '/' . $path;
+		}
+		$path = trim( preg_replace( '#/+#', '/', preg_replace( '#(^|/)\.(?=/|$)#', '$1', $path ) ), '/' );
+
+		return '' === $path ? false : $path;
+	}
+
+	/**
+	 * Where a require or include statement loads $file from, read from its tokens: the string in front of the name, with
+	 * `__DIR__ .` or `dirname( __FILE__ ) .` before it or nothing.
+	 *
+	 * @param string $source PHP source.
+	 * @param string $file   File name, e.g. wp-blog-header.php.
+	 *
+	 * @return array|false|null [ directory part, whether it is from the file's own directory ]; false when a statement
+	 *                          loads it in another form; null when none does.
+	 */
+	public static function loaded_from( $source, $file ) {
+		$name = preg_quote( $file, '/' );
+		foreach ( self::include_operands( $source, $alone ) as $k => $operand ) {
+			$text  = '';
+			$names = false;
+			foreach ( $operand as $token ) {
+				$text .= $token[1];
+				$names = $names || ( T_CONSTANT_ENCAPSED_STRING === $token[0] && preg_match( "/(^['\"]|\\/){$name}['\"]\$/", $token[1] ) );
+			}
+			if ( ! $names ) {
+				continue;
+			}
+			// Only a statement of its own, outside any block, says where WordPress always comes from.
+			if ( ! $alone[ $k ] || ! preg_match( "/^\\(?(?:(__DIR__|dirname\\(__FILE__\\))\\.)?(['\"])([^'\"\$\\\\]*?){$name}\\2\\)?\$/i", $text, $m ) ) {
+				return false;
+			}
+
+			return [ $m[3], '' !== $m[1] ];
 		}
 
 		return null;
@@ -1002,7 +1259,7 @@ class Site_PHP_Compat {
 	 *
 	 * @return array[] Lists of [ type, text ] tokens, without whitespace and comments.
 	 */
-	public static function include_operands( $source ) {
+	public static function include_operands( $source, &$alone = null ) {
 		$tokens = [];
 		foreach ( @token_get_all( $source ) as $token ) { // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- a broken file still tokenises.
 			if ( ! is_array( $token ) || ! in_array( $token[0], [ T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ], true ) ) {
@@ -1010,10 +1267,23 @@ class Site_PHP_Compat {
 			}
 		}
 		$operands = [];
+		$alone    = [];
+		$blocks   = 0;
+		$alt      = false;
 		foreach ( $tokens as $i => $token ) {
+			if ( null === $token[0] && '{' === $token[1] || in_array( $token[0], [ T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES ], true ) ) {
+				$blocks++;
+			} elseif ( null === $token[0] && '}' === $token[1] ) {
+				$blocks--;
+			} elseif ( in_array( $token[0], [ T_ENDIF, T_ENDWHILE, T_ENDFOR, T_ENDFOREACH, T_ENDSWITCH, T_ENDDECLARE ], true ) ) {
+				// Alternative-syntax blocks before it: whether it runs isn't read here.
+				$alt = true;
+			}
 			if ( ! in_array( $token[0], [ T_REQUIRE, T_REQUIRE_ONCE, T_INCLUDE, T_INCLUDE_ONCE ], true ) ) {
 				continue;
 			}
+			$before  = $i > 0 ? $tokens[ $i - 1 ] : [ T_OPEN_TAG, '' ];
+			$alone[] = ! $alt && 0 === $blocks && ( in_array( $before[0], [ T_OPEN_TAG, T_INLINE_HTML ], true ) || ( null === $before[0] && in_array( $before[1], [ ';', '}' ], true ) ) );
 			$operand = [];
 			$depth   = 0;
 			$ternary = 0;
@@ -1321,8 +1591,9 @@ class Site_PHP_Compat {
 	 */
 	protected function lock_estimate() {
 		$parent = $this->temp_parent();
-		// Not in the per-site directory, whose leftovers a scan removes; a site name never starts with a dot.
-		$handle = null === $parent ? false : @fopen( "$parent/.estimate-{$this->site}.lock", 'c' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- handled below.
+		$path   = null === $parent ? null : $this->control_path( $parent, 'estimate-lock' );
+		// Not in the per-site directory, whose leftovers a scan removes.
+		$handle = null === $path ? false : @fopen( $path, 'c' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- handled below.
 		if ( false === $handle ) {
 			return null;
 		}
@@ -1382,23 +1653,53 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * Pull on first use; most servers never run a check, so a fresh install doesn't pull it.
+	 * Pull the pinned tag before each check, so a host never keeps an outdated image under it (a tag can be rebuilt); a local
+	 * copy serves when the pull fails. Most servers never run a check, so a fresh install doesn't pull it.
 	 *
 	 * @param string $image Image with tag.
 	 *
-	 * @return bool Whether it is present.
+	 * @return string|null tool_error detail, or null when the image is there.
 	 */
 	protected function ensure_image( $image ) {
-		if ( 0 === $this->docker( [ 'docker', 'image', 'inspect', '--format', '{{.Id}}', $image ], 60 )['code'] ) {
-			return true;
+		$inspect = $this->docker( [ 'docker', 'image', 'inspect', '--format', '{{.Id}} {{len .RepoDigests}}', $image ], 60 );
+		$present = 0 === $inspect['code'];
+		// Built here, never pulled (no registry digest): a local test build, which a pull would replace.
+		if ( $present && preg_match( '/^\S+ 0$/', trim( $inspect['stdout'] ) ) ) {
+			EE::debug( "Using the local build of $image." );
+
+			return null;
 		}
 		EE::debug( "Pulling $image." );
-		if ( 0 !== $this->docker( [ 'docker', 'pull', $image ], self::PULL_TIMEOUT )['code'] ) {
-			return false;
-		}
-		$this->remove_other_tags( $image );
+		$pull = $this->docker( [ 'docker', 'pull', '--quiet', $image ], $present ? self::REPULL_TIMEOUT : self::PULL_TIMEOUT, true );
+		if ( 0 === $pull['code'] && ! $pull['timed_out'] ) {
+			$this->remove_other_tags( $image );
 
-		return true;
+			return null;
+		}
+		$why = $pull['timed_out'] ? 'timed out after ' . ( $present ? self::REPULL_TIMEOUT : self::PULL_TIMEOUT ) . ' s' : self::first_line( $pull['stderr'] );
+		if ( $present ) {
+			EE::debug( "Could not pull $image ($why); using the local copy." );
+
+			return null;
+		}
+
+		return 'image pull failed' . ( '' === $why ? '' : ": $why" );
+	}
+
+	/**
+	 * @param string $text Command output.
+	 *
+	 * @return string Its first non-empty line, cleaned and capped, for a one-line detail.
+	 */
+	protected static function first_line( $text ) {
+		foreach ( preg_split( '/\r?\n/', (string) $text ) as $line ) {
+			$line = trim( $line );
+			if ( '' !== $line ) {
+				return self::clean( strlen( $line ) > 200 ? substr( $line, 0, 200 ) . '...' : $line );
+			}
+		}
+
+		return '';
 	}
 
 	/**
@@ -1460,7 +1761,7 @@ class Site_PHP_Compat {
 		$this->register_cleanup();
 		clearstatcache( true, $dir );
 		// Without root (macOS), Docker Desktop's file sharing maps the owner itself.
-		if ( is_link( $dir ) || ! is_dir( $dir ) || ! chmod( $dir, 0700 ) || ( 0 === self::euid() && ! ( chown( $dir, 33 ) && chgrp( $dir, 33 ) ) ) ) {
+		if ( is_link( $dir ) || ! is_dir( $dir ) || ! chmod( $dir, 0700 ) || ( 0 === self::euid() && ! ( chown( $dir, 33 ) && chgrp( $dir, 33 ) ) ) || ( null === self::euid() && ! ( @chown( $dir, 33 ) && @chgrp( $dir, 33 ) ) && 0 === fileowner( $dir ) ) ) {
 			return null;
 		}
 		$real = realpath( $dir );
@@ -1792,12 +2093,49 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * @return int Bytes the report may still take: up to MEMORY_FLOOR when there is no limit.
+	 * @return int Bytes the report may still take: what the limit leaves, or with no limit what the host has free.
 	 */
 	protected function memory_available() {
 		$limit = self::bytes( ini_get( 'memory_limit' ) );
+		if ( $limit > 0 ) {
+			return $limit - memory_get_usage();
+		}
+		$free = $this->host_memory_available();
 
-		return ( $limit > 0 ? $limit : self::MEMORY_FLOOR ) - memory_get_usage();
+		return null === $free ? self::MEMORY_FLOOR - memory_get_usage() : $free;
+	}
+
+	/**
+	 * Raise the limit so a report that needs more than MEMORY_FLOOR can be read when the host has the memory.
+	 *
+	 * @param int $cost decode_cost() of the report.
+	 *
+	 * @return bool Whether the report now fits.
+	 */
+	protected function make_room( $cost ) {
+		$free = $this->host_memory_available();
+		// Never past what the host has free, whatever PHP's limit allows.
+		if ( null !== $free && $cost > $free ) {
+			return false;
+		}
+		if ( $cost <= $this->memory_available() ) {
+			return true;
+		}
+		if ( self::bytes( ini_get( 'memory_limit' ) ) <= 0 || null === $free ) {
+			return false;
+		}
+		ini_set( 'memory_limit', (string) ( memory_get_usage( true ) + $cost + 67108864 ) );
+
+		return $cost <= $this->memory_available();
+	}
+
+	/**
+	 * @return int|null MemAvailable of the host, or null when it can't be read (not Linux).
+	 */
+	protected function host_memory_available() {
+		$info = @file_get_contents( '/proc/meminfo' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- null when missing.
+
+		return false !== $info && preg_match( '/^MemAvailable:\s+(\d+) kB$/m', $info, $m ) ? (int) $m[1] * 1024 : null;
 	}
 
 	/**
@@ -2136,7 +2474,9 @@ class Site_PHP_Compat {
 		}
 
 		$tool = isset( $doc['tool']['phpcompatibility'] ) && is_string( $doc['tool']['phpcompatibility'] ) ? ' ' . self::clean( $doc['tool']['phpcompatibility'] ) : '';
-		yield "This is static analysis with PHPCompatibility$tool. Its coverage isn't complete and it can't see breakage that only shows at runtime.";
+		// WordPress core is never checked: its own release notes say which PHP versions it supports.
+		$scope = $this->wp_layout ? ' WordPress core is not checked: make sure your WordPress version supports this PHP version.' : '';
+		yield "This is static analysis with PHPCompatibility$tool.$scope Its coverage isn't complete and it can't see breakage that only shows at runtime.";
 	}
 
 	/**
@@ -2426,6 +2766,92 @@ class Site_PHP_Compat {
 	}
 
 	/**
+	 * For `ee site delete`: stop a running check of the site, then remove everything php-compat keeps for it.
+	 *
+	 * @param object        $site_data Site record.
+	 * @param callable|null $dispatch  Signal dispatcher, as for run().
+	 *
+	 * @return string|null Why the check couldn't be stopped, or null.
+	 */
+	public function stop_for_delete( $site_data, $dispatch = null ) {
+		$this->site     = $site_data->site_url;
+		$this->dispatch = $dispatch;
+		$parent         = rtrim( $this->temp_base(), '/' ) . '/' . self::TEMP_DIR;
+		// Nothing to do, and no temp directory created, for a site never checked.
+		if ( ! file_exists( $parent ) && false === $this->container_status( 'ee-php-compat-' . $this->site ) ) {
+			return null;
+		}
+		try {
+			$result = $this->run_cancel( $site_data );
+			if ( 'tool_error' !== $result['doc']['status'] ) {
+				// Kept until this process ends, so no new check of the site starts while it is deleted.
+				$kept       = $this->lock;
+				$this->lock = null;
+			}
+		} finally {
+			$this->cleanup();
+		}
+		if ( 'tool_error' === $result['doc']['status'] ) {
+			return $result['doc']['detail'];
+		}
+		$this->delete_lock = $kept;
+		$parent            = $this->temp_parent();
+		if ( null !== $parent && ! $this->wait_for_estimate( $parent ) ) {
+			return 'an estimate of the site is still running';
+		}
+		if ( null !== $parent ) {
+			$files = [ "$parent/.cancel/{$this->site}", "$parent/.cancel-lock/{$this->site}", "$parent/.estimate-lock/{$this->site}" ];
+			// Names site-command v3.11.0 used.
+			array_push( $files, "$parent/.cancel-{$this->site}", "$parent/.cancel-{$this->site}.lock", "$parent/.estimate-{$this->site}.lock" );
+			foreach ( $files as $file ) {
+				@unlink( $file ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- usually missing.
+			}
+			if ( is_dir( "$parent/{$this->site}" ) && ! is_link( "$parent/{$this->site}" ) ) {
+				$this->remove_tree( "$parent/{$this->site}" );
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Wait for a running estimate of the site to end (it holds its lock file), so its file isn't removed under it.
+	 *
+	 * @param string $parent temp_parent().
+	 *
+	 * @return bool Whether none runs now.
+	 */
+	protected function wait_for_estimate( $parent ) {
+		$handle = @fopen( "$parent/.estimate-lock/{$this->site}", 'r' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- missing: none ran.
+		if ( false === $handle ) {
+			return true;
+		}
+		$until = microtime( true ) + $this->estimate_wait();
+		while ( ! flock( $handle, LOCK_EX | LOCK_NB, $would_block ) ) {
+			if ( ! $would_block || microtime( true ) >= $until ) {
+				fclose( $handle );
+
+				return ! $would_block;
+			}
+			usleep( 100000 );
+			if ( function_exists( 'pcntl_signal_dispatch' ) ) {
+				null === $this->dispatch ? pcntl_signal_dispatch() : call_user_func( $this->dispatch );
+			}
+		}
+		// Unlinked by the caller while still locked, so a new estimate gets a new file.
+		$this->estimate_lock = $handle;
+
+		return true;
+	}
+
+	/**
+	 * @return int Seconds `ee site delete` waits for a running estimate: its whole time limit.
+	 */
+	protected function estimate_wait() {
+		return self::ESTIMATE_TIMEOUT + self::PROCESS_MARGIN;
+	}
+
+	/**
 	 * Remove a scan container that may still exist, then, once it is gone, the temporary directory; release the lock. Safe to call twice.
 	 */
 	public function cleanup() {
@@ -2452,6 +2878,13 @@ class Site_PHP_Compat {
 		if ( null !== $this->output_tmp ) {
 			@unlink( $this->output_tmp ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
 			$this->output_tmp = null;
+		}
+		// Still holding the lock: a --cancel that came during cleanup gets the same answer as this scan prints. An ok result
+		// stands; its request is then left for --cancel to read as not_running.
+		if ( null !== $this->result_status && ! in_array( $this->result_status, [ 'ok', 'cancelled' ], true ) && $this->cancel_requested() ) {
+			@unlink( $this->cancel_marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
+			$this->cancel_marker = null;
+			$this->late_cancel   = true;
 		}
 		if ( null !== $this->lock ) {
 			flock( $this->lock, LOCK_UN );
