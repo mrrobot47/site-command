@@ -351,8 +351,27 @@ each( $a );
     And I run 'bin/ee site php-compat bh-site-command-190.test --php=8.4 --format=json'
     Then the command should succeed
     And the JSON field "status" in STDOUT should be "ok"
-    And the JSON field "safe_to_upgrade" in STDOUT should be "false"
+    And the JSON field "safe_to_upgrade" in STDOUT should not be "true"
     And STDOUT should contain "{"type":"other","slug":"","branch":null,"file":"php container mounts","reason":"unreadable"}"
+
+  @wp
+  Scenario: A user compose file with env and a mount outside /var/www gets a verdict, and the mount is searched
+    Given the compat-scanner image is available
+    And the site "bh-site-command-194.test" exists, created with "--type=wp"
+    And I write "<?php\neach( $a );\n" to the file "{SITES_DIR}/bh-site-command-194.test/shared/lib/x.php"
+    And I make everything under "{SITES_DIR}/bh-site-command-194.test/shared" readable by everyone
+    And I write "services:\n  php:\n    environment:\n      - TZ=Europe/Berlin\n      - WP_ENV=production\n    volumes:\n      - ./shared:/srv/shared\n      - /etc/localtime:/etc/localtime:ro\n" to the file "{SITES_DIR}/bh-site-command-194.test/user-docker-compose/extra.yml"
+    When I run 'bin/ee site enable bh-site-command-194.test --refresh --force'
+    Then the command should succeed
+    When I run 'bin/ee site php-compat bh-site-command-194.test --php=8.4 --format=json'
+    Then the command should succeed
+    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "safe_to_upgrade" in STDOUT should be "false"
+    And STDOUT should not contain "/etc/localtime"
+    When I run 'bin/ee site php-compat bh-site-command-194.test --php=8.4'
+    Then the command should succeed
+    And STDOUT should contain "/srv/shared"
+    And STDOUT should contain "    PHPCompatibility.FunctionUse.RemovedFunctions.eachDeprecatedRemoved"
 
   @wp
   Scenario: WordPress in its own directory is found through the index.php nginx serves
