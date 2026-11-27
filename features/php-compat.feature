@@ -55,7 +55,7 @@ Feature: Check the PHP compatibility of a site's code
     Then the command should succeed
     And the JSON field "status" in STDOUT should be "ok"
     And the JSON field "wordpress.supports" in STDOUT should be "true"
-    And the JSON field "checked.dir" in STDOUT should contain "bh-site-command-193.test/app/htdocs"
+    And the JSON field "checked.dir" in STDOUT should contain "bh-site-command-193.test/app"
     And the JSON field "wordpress.core_files_checked" in STDOUT should be "false"
     And STDOUT should not contain "only its version is checked"
     When I run 'bin/ee site php-compat bh-site-command-193.test --php=8.4'
@@ -111,7 +111,7 @@ Feature: Check the PHP compatibility of a site's code
     And I make everything under "{SITES_DIR}/bh-site-command-184.test/app/htdocs/clean" readable by everyone
     When I run 'bin/ee site php-compat bh-site-command-184.test --php=8.4'
     Then the command should succeed
-    And STDOUT should match "/^No PHP 8\.4 (problems|errors) found in the \d+ files? checked in bh-site-command-184\.test \(all PHP in [^)]+\/app\/htdocs\)\.( \d+ warnings?\.)?\n/"
+    And STDOUT should match "/^No PHP 8\.4 (problems|errors) found in the \d+ files? checked in bh-site-command-184\.test \(all PHP in [^)]+\/app\)\.( \d+ warnings?\.)?\n/"
     And STDOUT should not contain "Safe to upgrade"
     And STDOUT should not contain "WordPress core"
     And STDOUT should match "/\nThis is static analysis with PHPCompatibility [^\n]+\. Its coverage isn't complete and it can't see breakage that only shows at runtime\.\n$/"
@@ -168,6 +168,24 @@ Feature: Check the PHP compatibility of a site's code
     And /dev/null should still be the null device
     And the symlink "{TMP}/null-link" should exist
     And the docker container "ee-php-compat-bh-site-command-181.test" should not exist
+    # Anyone could swap entries in a world-writable directory without the sticky bit.
+    When I run 'mkdir -p {TMP}/open && chmod 0777 {TMP}/open'
+    And I run 'bin/ee site php-compat bh-site-command-181.test --php=8.4 --output={TMP}/open/r.json'
+    Then the command should fail
+    And STDERR should contain "--output can't be in a directory everyone can write unless it is sticky like /tmp: {TMP}/open"
+
+  Scenario: --output may be a directory another user owns
+    Given the compat-scanner image is available
+    And the site "bh-site-command-181.test" exists, created with "--type=php"
+    And I write "<?php
+each( $a );
+" to the file "{SITES_DIR}/bh-site-command-181.test/app/htdocs/legacy/legacy.php"
+    And I make everything under "{SITES_DIR}/bh-site-command-181.test/app/htdocs/legacy" readable by everyone
+    When I run 'mkdir -p {TMP}/home-u && chown 1000:1000 {TMP}/home-u && chmod 0755 {TMP}/home-u'
+    And I run 'bin/ee site php-compat bh-site-command-181.test --php=8.4 --format=json --output={TMP}/home-u/r.json'
+    Then the command should succeed
+    And the JSON field "status" in STDOUT should be "ok"
+    And the file "{TMP}/home-u/r.json" should be owned by uid 0 with mode 0600
 
   @wp
   Scenario: A --public-dir site whose record lost its public dir is checked where nginx serves it, from inside the site directory
@@ -219,23 +237,34 @@ Feature: Check the PHP compatibility of a site's code
     And STDERR should contain "but nginx serves /var/www/htdocs/public"
 
   @wp
-  Scenario: A WP_CONTENT_DIR the check can't follow gives no verdict
-    Given the site "bh-site-command-188.test" exists, created with "--type=wp"
+  Scenario: A WP_CONTENT_DIR outside the WordPress directory is scanned, and PHP beside it too
+    Given the compat-scanner image is available
+    And the site "bh-site-command-188.test" exists, created with "--type=wp"
     And I write "<?php\n/**\n * Plugin Name: Compat Fixture\n */\neach( $a );\n" to the file "{SITES_DIR}/bh-site-command-188.test/app/htdocs/content/plugins/compat-fixture/compat-fixture.php"
+    And I write "<?php\n$f = create_function( '', 'return 1;' );\n" to the file "{SITES_DIR}/bh-site-command-188.test/app/adminer.php"
+    And I make everything under "{SITES_DIR}/bh-site-command-188.test/app/htdocs/content" readable by everyone
+    And I make everything under "{SITES_DIR}/bh-site-command-188.test/app/adminer.php" readable by everyone
     # Before wp-settings.php is loaded, where WordPress reads it.
     When I run 'sed -i "s#^require_once ABSPATH#define( \"WP_CONTENT_DIR\", __DIR__ . \"/htdocs/content\" );\nrequire_once ABSPATH#" {SITES_DIR}/bh-site-command-188.test/app/wp-config.php'
     Then the command should succeed
-    And the file "{SITES_DIR}/bh-site-command-188.test/app/wp-config.php" should contain "/htdocs/content"
     When I run 'bin/ee site php-compat bh-site-command-188.test --php=8.4 --format=json'
     Then the command should succeed
-    And the JSON field "status" in STDOUT should be "tool_error"
-    And the JSON field "safe_to_upgrade" in STDOUT should be null
-    And the JSON field "detail" in STDOUT should contain "{SITES_DIR}/bh-site-command-188.test/app/wp-config.php sets WP_CONTENT_DIR to {SITES_DIR}/bh-site-command-188.test/app/htdocs/content"
+    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "safe_to_upgrade" in STDOUT should be "false"
+    And STDOUT should match "/"errors":[2-9]/"
+    And the JSON field "checked.dir" in STDOUT should be "{SITES_DIR}/bh-site-command-188.test/app"
     And the docker container "ee-php-compat-bh-site-command-188.test" should not exist
-    When I run 'bin/ee site php-compat bh-site-command-188.test --php=8.4'
+
+  @wp
+  Scenario: A large geo file in the site's nginx config doesn't stop the check
+    Given the compat-scanner image is available
+    And the site "bh-site-command-193.test" exists, created with "--type=wp"
+    When I run 'awk "BEGIN { print \"geo \$banned {\"; for ( i = 0; i < 90000; i++ ) printf \"\t10.%d.%d.%d 1;\n\", i % 250, int( i / 250 ) % 250, i % 200; print \"}\" }" > {SITES_DIR}/bh-site-command-193.test/config/nginx/conf.d/bans.conf'
+    Then the file "{SITES_DIR}/bh-site-command-193.test/config/nginx/conf.d/bans.conf" should contain "geo $banned {"
+    When I run 'bin/ee site php-compat bh-site-command-193.test --php=8.4 --format=json'
     Then the command should succeed
-    And STDOUT should match "/^The check of bh-site-command-188\.test for PHP 8\.4 didn't finish: \S+\/app\/wp-config\.php sets WP_CONTENT_DIR to /"
-    And STDOUT should not contain "Safe to upgrade"
+    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "wordpress.supports" in STDOUT should be "true"
 
   @wp
   Scenario: With nothing to check the message names the directory checked, and a release layout under htdocs is found
@@ -245,7 +274,7 @@ Feature: Check the PHP compatibility of a site's code
     When I run 'mkdir {SITES_DIR}/bh-site-command-189.test/off && mv {SITES_DIR}/bh-site-command-189.test/app/htdocs/* {SITES_DIR}/bh-site-command-189.test/app/wp-config.php {SITES_DIR}/bh-site-command-189.test/off/'
     And I run 'cd {SITES_DIR}/bh-site-command-189.test && {EE} site php-compat --php=8.4'
     Then the command should succeed
-    And STDOUT should contain "No PHP code found to check in bh-site-command-189.test. Looked in {SITES_DIR}/bh-site-command-189.test/app/htdocs: its PHP code except WordPress core, uploads, caches and other skipped directories. The check follows the directory nginx serves (root in {SITES_DIR}/bh-site-command-189.test/config/nginx/conf.d/main.conf)"
+    And STDOUT should contain "No PHP code found to check in bh-site-command-189.test. Looked for PHP in {SITES_DIR}/bh-site-command-189.test/app, except WordPress core and old releases nginx doesn't serve."
     When I run 'mv {SITES_DIR}/bh-site-command-189.test/off/* {SITES_DIR}/bh-site-command-189.test/app/htdocs/ && rmdir {SITES_DIR}/bh-site-command-189.test/off && mv {SITES_DIR}/bh-site-command-189.test/app/htdocs/wp-content {SITES_DIR}/bh-site-command-189.test/app/htdocs/wp-content-off'
     # A CI/CD deploy: WordPress and its wp-config.php in releases/1, current links to it, wp-cli.yml points there, the record still says htdocs.
     When I run 'cd {SITES_DIR}/bh-site-command-189.test/app/htdocs && mkdir -p releases/1 && for f in *; do [ "$f" = releases ] || mv "$f" releases/1/; done && mv releases/1/wp-content-off releases/1/wp-content && ln -s /var/www/htdocs/releases/1 current && printf "path: current/\n" > wp-cli.yml'
@@ -282,6 +311,7 @@ Feature: Check the PHP compatibility of a site's code
     And the file "{EE_ROOT_DIR}/tmp/php-compat/.estimate-lock/bh-site-command-191.test" should not exist
     And the file "{EE_ROOT_DIR}/tmp/php-compat/.cancel-lock/bh-site-command-191.test" should not exist
     And the file "{EE_ROOT_DIR}/tmp/php-compat/.cancel/bh-site-command-191.test" should not exist
+    And STDERR should contain "Stopped the running php-compat check of bh-site-command-191.test; the delete goes on."
     When I wait up to 120 seconds for the background command to finish
     # Stopped by the delete, or done just before it.
     Then STDOUT should match "/"status":"(cancelled|ok)"/"
@@ -320,8 +350,9 @@ Feature: Check the PHP compatibility of a site's code
     When I run 'bin/ee site disable bh-site-command-190.test'
     And I run 'bin/ee site php-compat bh-site-command-190.test --php=8.4 --format=json'
     Then the command should succeed
-    And the JSON field "status" in STDOUT should be "tool_error"
-    And the JSON field "detail" in STDOUT should contain "user-docker-compose/mount.yml may change the site's php service, which this check can only see while the site runs"
+    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "safe_to_upgrade" in STDOUT should be "false"
+    And STDOUT should contain "{"type":"other","slug":"","branch":null,"file":"php container mounts","reason":"unreadable"}"
 
   @wp
   Scenario: WordPress in its own directory is found through the index.php nginx serves
@@ -336,18 +367,13 @@ Feature: Check the PHP compatibility of a site's code
     Then the command should succeed
     And the JSON field "status" in STDOUT should be "ok"
     And the JSON field "safe_to_upgrade" in STDOUT should be "false"
-    # An index.php that isn't WordPress's own gives no verdict.
-    When I run 'printf "<?php\n\$d = __DIR__ . \"/wp\";\nrequire \$d . \"/wp-blog-header.php\";\n" > {SITES_DIR}/bh-site-command-192.test/app/htdocs/index.php'
+    # An index.php that names WordPress through a variable: the install is found by the scanner all the same.
+    When I run 'printf "<?php\n\$d = __DIR__ . \"/wp\";\nrequire \$d . \"/wp-blog-header.php\";\n" > {SITES_DIR}/bh-site-command-192.test/app/htdocs/index.php && printf "<?php\neach( \$a );\n" > {SITES_DIR}/bh-site-command-192.test/app/htdocs/tool.php && chmod 0644 {SITES_DIR}/bh-site-command-192.test/app/htdocs/tool.php'
     And I run 'bin/ee site php-compat bh-site-command-192.test --php=8.4 --format=json'
     Then the command should succeed
-    And the JSON field "status" in STDOUT should be "tool_error"
-    And the JSON field "detail" in STDOUT should contain "htdocs/index.php isn't WordPress's own index.php"
-    # PHP beside WordPress that the scan of htdocs/wp wouldn't read gives no verdict either.
-    When I run 'printf "<?php\ndefine( \"WP_USE_THEMES\", true );\nrequire __DIR__ . \"/wp/wp-blog-header.php\";\n" > {SITES_DIR}/bh-site-command-192.test/app/htdocs/index.php && printf "<?php\neach( \$a );\n" > {SITES_DIR}/bh-site-command-192.test/app/htdocs/tool.php'
-    And I run 'bin/ee site php-compat bh-site-command-192.test --php=8.4 --format=json'
-    Then the command should succeed
-    And the JSON field "status" in STDOUT should be "tool_error"
-    And the JSON field "detail" in STDOUT should contain "htdocs/tool.php is PHP outside the WordPress directory"
+    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "safe_to_upgrade" in STDOUT should be "false"
+    And STDOUT should match "/"errors":[2-9]/"
 
   Scenario: An html site is refused
     Given the html site "bh-site-command-182.test" exists
@@ -394,7 +420,7 @@ Feature: Check the PHP compatibility of a site's code
     Then the command should succeed
     And STDOUT should be exactly:
       """
-      A check of bh-site-command-183.test is already running.
+      A check or an estimate of bh-site-command-183.test is already running.
       """
     When I wait up to 900 seconds for the background command to finish
     Then the command should succeed
@@ -402,7 +428,7 @@ Feature: Check the PHP compatibility of a site's code
     And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-183.test" should not exist
     And the docker container "ee-php-compat-bh-site-command-183.test" should not exist
 
-  Scenario: --estimate prints its JSON while a check of the same site runs
+  Scenario: An estimate while a check of the same site runs is busy, and --cancel stops that check
     Given the compat-scanner image is available
     And the site "bh-site-command-183.test" exists, created with "--type=php"
     And the directory "{SITES_DIR}/bh-site-command-183.test/app/htdocs/bulk" holds 5000 generated PHP files
@@ -410,22 +436,22 @@ Feature: Check the PHP compatibility of a site's code
     And I wait up to 120 seconds until the command "docker inspect -f '{{.State.Running}}' ee-php-compat-bh-site-command-183.test | grep -qx true" succeeds
     And I run 'bin/ee site php-compat bh-site-command-183.test --php=8.4 --estimate --format=json'
     Then the command should succeed
-    And STDOUT should be valid JSON
-    And STDOUT should match "/^\{.*\}\n?$/"
-    And the JSON field "status" in STDOUT should be "ok"
-    And the JSON field "estimate" in STDOUT should be "true"
-    And the JSON field "site" in STDOUT should be "bh-site-command-183.test"
-    And the JSON field "target" in STDOUT should be "8.4"
-    And STDOUT should match "/"php_files":[1-9][0-9]{3}/"
-    And STDOUT should match "/"estimated_seconds":[1-9]/"
+    And STDOUT should be exactly:
+      """
+      {"v":1,"status":"busy","estimate":true,"site":"bh-site-command-183.test","target":"8.4","safe_to_upgrade":null}
+      """
     And the background command should still be running
-    When I run 'bin/ee site php-compat bh-site-command-183.test --php=8.4 --estimate'
+    When I run 'bin/ee site php-compat bh-site-command-183.test --cancel --format=json'
     Then the command should succeed
-    And STDOUT should match "/^A check of bh-site-command-183\.test for PHP 8\.4 should take about .+ This is an estimate\.\n$/"
-    When I wait up to 900 seconds for the background command to finish
+    And STDOUT should be exactly:
+      """
+      {"v":1,"status":"cancelled","cancel":true,"site":"bh-site-command-183.test"}
+      """
+    When I wait up to 120 seconds for the background command to finish
     Then the command should succeed
-    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "status" in STDOUT should be "cancelled"
     And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-183.test" should not exist
+    And the docker container "ee-php-compat-bh-site-command-183.test" should not exist
 
   Scenario: No temporary directory or container is left behind, also when the check times out
     Given the compat-scanner image is available
@@ -471,7 +497,7 @@ Feature: Check the PHP compatibility of a site's code
       """
     And the docker container "ee-php-compat-bh-site-command-184.test" should not exist
 
-  Scenario: --cancel stops the container of a check and removes its temporary directory
+  Scenario: --cancel stops the container of a killed check that still runs
     Given the compat-scanner image is available
     And the site "bh-site-command-184.test" exists, created with "--type=php"
     And I write "<?php\nfunction bh_compat_ok() { return 1; }\n" to the file "{SITES_DIR}/bh-site-command-184.test/app/htdocs/clean/ok.php"
@@ -485,7 +511,6 @@ Feature: Check the PHP compatibility of a site's code
       {"v":1,"status":"cancelled","cancel":true,"site":"bh-site-command-184.test"}
       """
     And the docker container "ee-php-compat-bh-site-command-184.test" should not exist
-    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should not exist
     And the file "{EE_ROOT_DIR}/tmp/php-compat/.cancel/bh-site-command-184.test" should not exist
     When I run 'bin/ee site php-compat bh-site-command-184.test --cancel'
     Then the command should succeed
@@ -498,8 +523,9 @@ Feature: Check the PHP compatibility of a site's code
     Then the command should succeed
     And the JSON field "status" in STDOUT should be "ok"
     And the JSON field "safe_to_upgrade" in STDOUT should be "true"
+    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should not exist
 
-  Scenario: --cancel removes the stopped container and directory of a killed check
+  Scenario: --cancel removes the stopped container of a killed check
     Given the compat-scanner image is available
     And the site "bh-site-command-184.test" exists, created with "--type=php"
     And a killed php-compat scan of site "bh-site-command-184.test" left its temporary directory and container behind
@@ -510,7 +536,8 @@ Feature: Check the PHP compatibility of a site's code
       No check of bh-site-command-184.test is running.
       """
     And the docker container "ee-php-compat-bh-site-command-184.test" should not exist
-    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should not exist
+    # Its temporary directory is the next check's to remove.
+    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should exist
 
   Scenario: --cancel of a site that doesn't exist is refused
     When I run 'bin/ee site php-compat bh-site-command-missing.test --cancel'
