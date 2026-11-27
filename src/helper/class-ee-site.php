@@ -3375,7 +3375,7 @@ abstract class EE_Site_Command {
 	 * ---
 	 *
 	 * [--output=<path>]
-	 * : Also write the full report, with every error and warning, as JSON to this absolute path: the JSON summary's fields (the same verdict) plus every component and its findings. A finding left out of the verdict stays in its component, marked `"ignored": true`, and its file is listed under `ignored`. The file is owned by root with mode 0600 and replaces an existing one. It is written only when the check finishes with a result (status ok); otherwise an existing file is left as it was. Its directory and every parent must be owned by root and not writable by other users (a sticky directory such as /tmp is fine). Not with --estimate.
+	 * : Also write the full report, with every error and warning, as JSON to this absolute path: the JSON summary's fields (the same verdict) plus every component and its findings. A finding left out of the verdict stays in its component, marked `"ignored": true`, and its file is listed under `ignored`. The file is owned by root with mode 0600 and replaces an existing one. It is written only when the check finishes with a result (status ok); otherwise an existing file is left as it was. Its directory must exist and be writable, and can't be in /dev, /proc or /sys or be writable by everyone without the sticky bit (/tmp is fine). Not with --estimate.
 	 *
 	 * [--timeout=<seconds>]
 	 * : Time limit for the scan itself, in seconds. A scan that hits it reports tool_error and no verdict. Pulling the scanner image on first use isn't counted. Default: 14400 (4 hours). Not with --estimate.

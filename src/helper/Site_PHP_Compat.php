@@ -288,7 +288,7 @@ SH;
 	/** @var resource|null Shared host-wide lock while this check uses the scanner image, so no other check removes its tag. */
 	protected $image_lock;
 
-	/** @var array|null --output directory as validated: path, dev, ino. */
+	/** @var string|null Real directory of --output, as validated. */
 	protected $output_dir;
 
 	/** @var string|null Temporary file of write_report() until it is renamed. */
@@ -460,18 +460,19 @@ SH;
 		if ( false === $dir || ! is_dir( $dir ) ) {
 			EE::error( 'The directory of --output does not exist: ' . dirname( $output ) );
 		}
-		// Another user who can rename entries there could redirect the root-owned write.
-		if ( ! $this->trusted_dir( $dir ) ) {
-			EE::error( "--output must be in a directory only root can change: $dir or one of its parents is owned by another user or writable by others." );
-		}
-		if ( is_dir( $output ) && ! is_link( $output ) ) {
-			EE::error( "--output is a directory: $output" );
-		}
 		// The rename would replace a device node such as /dev/null with the report.
-		foreach ( [ '/dev', '/proc', '/sys', '/run' ] as $system ) {
+		foreach ( [ '/dev', '/proc', '/sys' ] as $system ) {
 			if ( $dir === $system || 0 === strpos( $dir, "$system/" ) ) {
 				EE::error( "--output can't be in $system: $output" );
 			}
+		}
+		// Anyone could rename entries there and redirect root's write; the sticky bit (/tmp) stops that.
+		$mode = fileperms( $dir );
+		if ( ( $mode & 0002 ) && ! ( $mode & 01000 ) ) {
+			EE::error( "--output can't be in a directory everyone can write unless it is sticky like /tmp: $dir" );
+		}
+		if ( is_dir( $output ) && ! is_link( $output ) ) {
+			EE::error( "--output is a directory: $output" );
 		}
 		if ( ! self::replaceable( $output ) ) {
 			EE::error( "--output is not a regular file: $output" );
@@ -485,12 +486,7 @@ SH;
 		if ( ! $writable ) {
 			EE::error( 'The directory of --output is not writable: ' . dirname( $output ) );
 		}
-		$stat             = stat( $dir );
-		$this->output_dir = [
-			'path' => $dir,
-			'dev'  => $stat['dev'],
-			'ino'  => $stat['ino'],
-		];
+		$this->output_dir = $dir;
 
 		return $output;
 	}
@@ -4371,13 +4367,7 @@ SH;
 	 * @return bool
 	 */
 	protected function write_report( $path, $content ) {
-		$dir = $this->output_dir['path'];
-		if ( ! $this->output_dir_unchanged( $path ) ) {
-			EE::debug( "The directory of $path changed during the check." );
-
-			return false;
-		}
-		$tmp = $dir . '/.ee-php-compat-' . bin2hex( random_bytes( 8 ) );
+		$tmp = $this->output_dir . '/.ee-php-compat-' . bin2hex( random_bytes( 8 ) );
 		// 'x' (O_EXCL) never follows or reuses an entry, and the file is written through this handle only, never reopened by name.
 		$mask   = umask( 0077 );
 		$handle = @fopen( $tmp, 'x' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- checked below.
@@ -4389,37 +4379,23 @@ SH;
 		// A default ACL on the directory replaces the umask, so set the mode, and check it on the handle before writing anything.
 		@chmod( $tmp, 0600 ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- checked below.
 		$created = fstat( $handle );
-		if ( ! $created || 0600 !== ( $created['mode'] & 07777 ) ) {
-			fclose( $handle );
-			@unlink( $tmp ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
-			$this->output_tmp = null;
-
-			return false;
-		}
-		$written          = 0;
-		while ( $written < strlen( $content ) ) {
+		$ok      = $created && 0600 === ( $created['mode'] & 07777 );
+		for ( $written = 0; $ok && $written < strlen( $content ); $written += $chunk ) {
 			$chunk = fwrite( $handle, substr( $content, $written, 1048576 ) );
-			if ( ! $chunk ) {
-				break;
-			}
-			$written += $chunk;
+			$ok    = (bool) $chunk;
 		}
-		$ok     = strlen( $content ) === $written && fflush( $handle );
-		$file   = fstat( $handle );
-		$target = $dir . '/' . basename( $path );
-		// lchown/lchgrp never follow a link (a setgid directory gives the file its group); the directory is checked again right before the rename.
-		$ok = $ok && ( 0 !== self::euid() || ( @lchown( $tmp, 0 ) && @lchgrp( $tmp, 0 ) ) ) && $this->output_dir_unchanged( $path ) && self::replaceable( $target ) && @rename( $tmp, $target ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- reported as tool_error.
+		$ok = $ok && fflush( $handle );
+		fclose( $handle );
+		$target = $this->output_dir . '/' . basename( $path );
+		// lchown/lchgrp never follow a link; a setgid directory gives the file its group.
+		// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- reported as tool_error.
+		$owned = 0 !== self::euid() || ( @lchown( $tmp, 0 ) && @lchgrp( $tmp, 0 ) );
+		// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- reported as tool_error.
+		$ok = $ok && $owned && self::replaceable( $target ) && @rename( $tmp, $target );
 		if ( ! $ok ) {
 			@unlink( $tmp ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
 		}
 		$this->output_tmp = null;
-		if ( $ok ) {
-			clearstatcache( true, $target );
-			$published = @lstat( $target ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- checked below.
-			// What was renamed must be the file written above; the open handle keeps its inode number from being reused.
-			$ok = $published && $file && 0100000 === ( $published['mode'] & 0170000 ) && $published['dev'] === $file['dev'] && $published['ino'] === $file['ino'];
-		}
-		fclose( $handle );
 
 		return $ok;
 	}
@@ -4442,41 +4418,6 @@ SH;
 		}
 
 		return 0100000 === $type;
-	}
-
-	/**
-	 * @param string $dir Real path of a directory.
-	 *
-	 * @return bool Whether no other user can change its entries or those of its parents: each is owned by root or this user, and not group- or world-writable unless sticky.
-	 */
-	protected function trusted_dir( $dir ) {
-		$euid = self::euid();
-		for ( $path = $dir; ; $path = dirname( $path ) ) {
-			clearstatcache( true, $path );
-			$stat = @lstat( $path ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- checked below.
-			if ( ! $stat || 0040000 !== ( $stat['mode'] & 0170000 ) || ( 0 !== $stat['uid'] && $euid !== $stat['uid'] ) ) {
-				return false;
-			}
-			if ( ( $stat['mode'] & 0022 ) && ! ( $stat['mode'] & 01000 ) ) {
-				return false;
-			}
-			if ( '/' === $path || '.' === $path ) {
-				return '/' === $path;
-			}
-		}
-	}
-
-	/**
-	 * @param string $path --output.
-	 *
-	 * @return bool Whether its directory still resolves to the one validated at the start.
-	 */
-	protected function output_dir_unchanged( $path ) {
-		clearstatcache();
-		$real = realpath( dirname( $path ) );
-		$stat = false === $real ? false : @stat( $real ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- checked below.
-
-		return $real === $this->output_dir['path'] && $stat && $stat['dev'] === $this->output_dir['dev'] && $stat['ino'] === $this->output_dir['ino'] && $this->trusted_dir( $real );
 	}
 
 	/**
