@@ -256,10 +256,10 @@ Feature: Check the PHP compatibility of a site's code
   @wp
   Scenario: A large geo file in the site's nginx config doesn't stop the check
     Given the compat-scanner image is available
-    And the site "bh-site-command-193.test" exists, created with "--type=wp"
-    When I run 'awk "BEGIN { print \"geo \$banned {\"; for ( i = 0; i < 90000; i++ ) printf \"\t10.%d.%d.%d 1;\n\", i % 250, int( i / 250 ) % 250, i % 200; print \"}\" }" > {SITES_DIR}/bh-site-command-193.test/config/nginx/conf.d/bans.conf'
-    Then the file "{SITES_DIR}/bh-site-command-193.test/config/nginx/conf.d/bans.conf" should contain "geo $banned {"
-    When I run 'bin/ee site php-compat bh-site-command-193.test --php=8.4 --format=json'
+    And the site "bh-site-command-195.test" exists, created with "--type=wp"
+    When I run 'awk "BEGIN { print \"geo \$banned {\"; for ( i = 0; i < 90000; i++ ) printf \"\t10.%d.%d.%d 1;\n\", i % 250, int( i / 250 ) % 250, i % 200; print \"}\" }" > {SITES_DIR}/bh-site-command-195.test/config/nginx/conf.d/bans.conf'
+    Then the file "{SITES_DIR}/bh-site-command-195.test/config/nginx/conf.d/bans.conf" should contain "geo $banned {"
+    When I run 'bin/ee site php-compat bh-site-command-195.test --php=8.4 --format=json'
     Then the command should succeed
     And the JSON field "status" in STDOUT should be "ok"
     And the JSON field "wordpress.supports" in STDOUT should be "true"
