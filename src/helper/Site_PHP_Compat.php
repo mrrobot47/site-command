@@ -697,7 +697,7 @@ class Site_PHP_Compat {
 	 * @param object $site_data Site record.
 	 * @param string $code      Real path of the site's app/.
 	 *
-	 * @return string[]|string Host paths of the ini and FPM files PHP reads, or a tool_error detail.
+	 * @return string[]|string php_config_files(), or a tool_error detail.
 	 */
 	protected function php_container( $site_data, $code ) {
 		$this->binds       = [];
@@ -716,11 +716,13 @@ class Site_PHP_Compat {
 		if ( count( $ids ) > 1 ) {
 			return 'the site has more than one php container (' . count( $ids ) . '), which this check can\'t confirm';
 		}
-		$config_dir = $site_data->site_fs_path . '/config/php';
+		$config = [
+			'/usr/local/etc' => $site_data->site_fs_path . '/config/php',
+		];
 		if ( ! $ids ) {
 			$this->stopped_site_mounts( $site_data->site_fs_path );
 
-			return self::php_config_files( $config_dir );
+			return self::php_config_files( $config );
 		}
 		$inspect = $this->docker( [ 'docker', 'inspect', '--format', '{{json .}}', $ids[0] ], 60 );
 		$info    = 0 === $inspect['code'] ? json_decode( trim( $inspect['stdout'] ), true ) : null;
@@ -730,7 +732,6 @@ class Site_PHP_Compat {
 		$this->php_image     = isset( $info['Config']['Image'] ) ? (string) $info['Config']['Image'] : '';
 		$this->container_php = preg_match( '#^easyengine/php(\d+\.\d+):#', $this->php_image, $m ) ? $m[1] : null;
 		$this->command_settings( $info['Config'] );
-		$files = [];
 		foreach ( $info['Mounts'] as $mount ) {
 			$dst = isset( $mount['Destination'] ) ? rtrim( (string) $mount['Destination'], '/' ) : '';
 			$src = isset( $mount['Source'] ) ? (string) $mount['Source'] : '';
@@ -741,18 +742,14 @@ class Site_PHP_Compat {
 				}
 				continue;
 			}
-			if ( '/usr/local/etc' === $dst ) {
-				$config_dir = $src;
-				continue;
-			}
-			if ( 0 === strpos( $dst, '/usr/local/etc/' ) ) {
-				$files = array_merge( $files, is_dir( $src ) ? self::config_files_in( $src ) : [ $src ] );
+			if ( '/usr/local/etc' === $dst || 0 === strpos( $dst, '/usr/local/etc/' ) ) {
+				$config[ $dst ] = $src;
 				continue;
 			}
 			$this->classify_mount( $mount, $dst, $src, $site_data->site_fs_path, $code );
 		}
 
-		return array_merge( self::php_config_files( $config_dir ), preg_grep( '/\.(?:ini|conf)$/', $files ) );
+		return self::php_config_files( $config );
 	}
 
 	/**
@@ -906,42 +903,67 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * @param string $dir Real source of the php container's /usr/local/etc.
+	 * The ini and FPM files PHP reads, named by where PHP sees them: a mount decides by its destination, whatever its host
+	 * name, and a file mounted into conf.d or php-fpm.d is listed there. PHP's conf.d scan loads dot-files too.
 	 *
-	 * @return string[] The ini and FPM files PHP reads there; PHP's conf.d scan loads dot-files too.
+	 * @param string[] $mounts Host source by destination: /usr/local/etc and the mounts below it.
+	 *
+	 * @return string[] Host path by container path.
 	 */
-	protected static function php_config_files( $dir ) {
-		$files = [ "$dir/php/php.ini", "$dir/php/php-fpm-fcgi.ini", "$dir/php-fpm.conf" ];
+	protected static function php_config_files( array $mounts ) {
+		$files = [];
+		foreach ( [ '/usr/local/etc/php/php.ini', '/usr/local/etc/php/php-fpm-fcgi.ini', '/usr/local/etc/php-fpm.conf' ] as $file ) {
+			$files[ $file ] = self::config_host_path( $mounts, $file );
+		}
+		$dirs = [
+			'/usr/local/etc/php/conf.d' => '.ini',
+			'/usr/local/etc/php-fpm.d'  => '.conf',
+		];
+		foreach ( $dirs as $dir => $suffix ) {
+			$mounted = preg_grep( '#^' . preg_quote( $dir, '#' ) . '/[^/]+$#', array_keys( $mounts ) );
+			$names   = array_merge( self::entries( self::config_host_path( $mounts, $dir ) ), array_map( 'basename', $mounted ) );
+			foreach ( $names as $name ) {
+				if ( substr( $name, -strlen( $suffix ) ) === $suffix ) {
+					$files[ "$dir/$name" ] = self::config_host_path( $mounts, "$dir/$name" );
+				}
+			}
+		}
 
-		return array_merge( $files, self::config_files_in( "$dir/php/conf.d" ), self::config_files_in( "$dir/php-fpm.d" ) );
+		return $files;
 	}
 
 	/**
-	 * @param string $dir Directory.
+	 * @param string[] $mounts See php_config_files().
+	 * @param string   $path   Container path under /usr/local/etc.
 	 *
-	 * @return string[] Its .ini and .conf files.
+	 * @return string Its host path, through the most specific mount holding it.
 	 */
-	protected static function config_files_in( $dir ) {
-		$names = preg_grep( '/\.(?:ini|conf)$/', (array) self::entries( $dir ) );
+	protected static function config_host_path( array $mounts, $path ) {
+		$best = '/usr/local/etc';
+		foreach ( array_keys( $mounts ) as $dst ) {
+			if ( strlen( $dst ) > strlen( $best ) && ( $path === $dst || 0 === strpos( $path, "$dst/" ) ) ) {
+				$best = $dst;
+			}
+		}
 
-		return array_map(
-			function ( $name ) use ( $dir ) {
-				return "$dir/$name";
-			},
-			array_values( $names )
-		);
+		return $mounts[ $best ] . substr( $path, strlen( $best ) );
 	}
 
 	/**
 	 * Collect the files PHP is told to load first or last (COMPAT_REQUIRE), and note the settings whose effect the scan
 	 * can't follow, from every ini and FPM file PHP reads, line by line.
 	 *
-	 * @param string[] $files Host paths.
+	 * @param string[] $files php_config_files().
 	 */
 	protected function read_php_settings( array $files ) {
 		$this->require = [];
-		foreach ( array_unique( $files ) as $file ) {
-			$fpm = '.conf' === substr( $file, -5 );
+		foreach ( $files as $path => $file ) {
+			// A link made inside the container (to a container path) doesn't lead to the same file here.
+			if ( is_link( $file ) && ! file_exists( $file ) ) {
+				$this->settings[] = 'a linked PHP config file this check can\'t follow';
+				continue;
+			}
+			$fpm = '.conf' === substr( $path, -5 );
 			self::each_line(
 				$file,
 				function ( $line ) use ( $fpm ) {
