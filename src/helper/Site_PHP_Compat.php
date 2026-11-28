@@ -210,6 +210,9 @@ class Site_PHP_Compat {
 	/** @var string|null Cancel request file a scan watches once it holds the site lock. */
 	protected $cancel_marker;
 
+	/** @var string[]|null The cancel request this run wrote, and the site directory, while a check may still take it. */
+	protected $own_request;
+
 	/** @var string|null This run's directory mounted at /out, while it exists. */
 	protected $temp_dir;
 
@@ -1355,38 +1358,53 @@ class Site_PHP_Compat {
 	 * @return array 'doc' (cancelled, not_running or tool_error) and 'report' (always null).
 	 */
 	protected function run_cancel( $site_data ) {
-		$parent = $this->temp_parent();
-		$marker = null === $parent ? null : $this->cancel_path( $parent );
+		$site_dir = $site_data->site_fs_path;
+		$parent   = $this->temp_parent();
+		$marker   = null === $parent ? null : $this->cancel_path( $parent );
 		if ( null === $marker ) {
 			return $this->doc( 'tool_error', 'could not create the temporary directory' );
+		}
+		if ( $this->restore_running( $site_dir ) ) {
+			return $this->doc( 'tool_error', 'a restore of the site is running' );
 		}
 		// The request stops a check that is still before its container (pulling the image, reading the layout).
 		if ( ! @touch( $marker ) ) { // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- reported as tool_error.
 			return $this->doc( 'tool_error', 'could not write the cancel request' );
 		}
-		$stopped = $this->stop_containers();
-		if ( is_string( $stopped ) ) {
-			return $this->doc( 'tool_error', $stopped );
-		}
-		if ( $this->restore_running( $site_data->site_fs_path ) ) {
-			@unlink( $marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
-			return $this->doc( 'tool_error', 'a restore of the site is running' );
-		}
-		$waited = ! $this->lock_site( $site_data->site_fs_path );
-		if ( $waited && ! $this->wait_for_site_lock( $site_data->site_fs_path, $this->cancel_wait() ) ) {
+		$this->own_request                 = [ $marker, $site_dir ];
+		list( $stopped, $waited, $locked ) = $this->stop_site_check( $site_dir, true );
+		if ( ! $locked ) {
 			// The request stays: the check still reports cancelled when it gets to it.
-			return $this->doc( 'tool_error', 'the running check did not stop within ' . $this->cancel_wait() . ' s' );
+			return $this->doc( 'tool_error', is_string( $stopped ) ? $stopped : 'the running check did not stop within ' . $this->cancel_wait() . ' s' );
 		}
 		// A check that stopped for the request removed it; one still there was taken by no check.
 		clearstatcache( true, $marker );
 		$taken = ! file_exists( $marker );
 		@unlink( $marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
+		if ( is_string( $stopped ) ) {
+			return $this->doc( 'tool_error', $stopped );
+		}
 		// Without the lock a live check may still own the directory.
 		if ( null !== $this->lock ) {
 			$this->remove_site_temp( $parent );
 		}
 
 		return $this->doc( $stopped || ( $waited && $taken ) ? 'cancelled' : 'not_running' );
+	}
+
+	/**
+	 * Remove the site's check and estimate containers, then wait until a stopped check lets go of the site lock.
+	 *
+	 * @param string $site_dir Site directory.
+	 * @param bool   $stop     Whether to look for containers at all.
+	 *
+	 * @return array [ stop_containers() result, whether another run held the lock, whether this run holds it now ]
+	 */
+	protected function stop_site_check( $site_dir, $stop ) {
+		$stopped = $stop ? $this->stop_containers() : false;
+		$waited  = ! $this->lock_site( $site_dir );
+
+		return [ $stopped, $waited, ! $waited || $this->wait_for_site_lock( $site_dir, $this->cancel_wait() ) ];
 	}
 
 	/**
@@ -3443,21 +3461,19 @@ class Site_PHP_Compat {
 		$parent = rtrim( $this->temp_base(), '/' ) . '/' . self::TEMP_DIR;
 		// Never checked on this host: no check runs without the temporary directory, so docker isn't asked.
 		$checked = file_exists( $parent ) || is_link( $parent );
-		if ( $checked ) {
-			$usable = $this->temp_parent();
-			$marker = null === $usable ? null : $this->cancel_path( $usable );
-			if ( null !== $marker ) {
-				@touch( $marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- the container is removed anyway.
-			}
-			$stopped = $this->stop_containers();
-			// The scanner reads the code read-only, so a delete under it harms nothing.
-			if ( is_string( $stopped ) ) {
-				EE::warning( "Could not stop the php-compat check of {$this->site} ($stopped); the delete goes on." );
-			} elseif ( $stopped ) {
-				EE::warning( "Stopped the running php-compat check of {$this->site}; the delete goes on." );
-			}
+		$marker  = $checked && null !== $this->temp_parent() ? $this->cancel_path( $parent ) : null;
+		if ( null !== $marker ) {
+			@touch( $marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- the container is removed anyway.
+			$this->own_request = [ $marker, $site_dir ];
 		}
-		if ( ! $this->lock_site( $site_dir ) && ! $this->wait_for_site_lock( $site_dir, $this->cancel_wait() ) ) {
+		list( $stopped, , $locked ) = $this->stop_site_check( $site_dir, $checked );
+		// The scanner reads the code read-only, so a delete under it harms nothing.
+		if ( is_string( $stopped ) ) {
+			EE::warning( "Could not stop the php-compat check of {$this->site} ($stopped); the delete goes on." );
+		} elseif ( $stopped ) {
+			EE::warning( "Stopped the running php-compat check of {$this->site}; the delete goes on." );
+		}
+		if ( ! $locked ) {
 			if ( $this->restore_running( $site_dir ) ) {
 				return 'a restore of the site is running';
 			}
@@ -3473,6 +3489,7 @@ class Site_PHP_Compat {
 			foreach ( $files as $file ) {
 				@unlink( $file ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- usually missing.
 			}
+			$this->own_request = null;
 			$this->remove_site_temp( $parent );
 		}
 
@@ -3514,6 +3531,14 @@ class Site_PHP_Compat {
 		if ( null !== $this->output_tmp ) {
 			@unlink( $this->output_tmp ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
 			$this->output_tmp = null;
+		}
+		// A --cancel or delete that ended early: with no check left to take its request, the next check would read it.
+		if ( null !== $this->own_request ) {
+			list( $marker, $site_dir ) = $this->own_request;
+			$this->own_request         = null;
+			if ( null !== $this->lock || $this->lock_site( $site_dir ) ) {
+				@unlink( $marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- usually gone already.
+			}
 		}
 		// Still holding the lock: a --cancel that came during cleanup gets the same answer as this scan prints. An ok result
 		// stands; its request is then left for --cancel to read as not_running.
