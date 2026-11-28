@@ -1262,7 +1262,8 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * --cancel: stop the site's running check or estimate, then wait until it has let go of the site lock.
+	 * --cancel: stop the site's running check or estimate, wait until it has let go of the site lock, then remove what a
+	 * killed check left in the temporary directory.
 	 *
 	 * @param object $site_data Site record.
 	 *
@@ -1295,6 +1296,10 @@ class Site_PHP_Compat {
 		clearstatcache( true, $marker );
 		$taken = ! file_exists( $marker );
 		@unlink( $marker ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
+		// Without the lock a live check may still own the directory.
+		if ( null !== $this->lock ) {
+			$this->remove_site_temp( $parent );
+		}
 
 		return $this->doc( $stopped || ( $waited && $taken ) ? 'cancelled' : 'not_running' );
 	}
@@ -1911,6 +1916,18 @@ class Site_PHP_Compat {
 		foreach ( array_diff( (array) @scandir( $site_dir ), [ '.', '..', false ] ) as $entry ) { // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- an unreadable dir has nothing to remove.
 			EE::debug( "Removing the leftover temporary directory $site_dir/" . self::clean( $entry ) . '.' );
 			$this->remove_tree( "$site_dir/$entry" );
+		}
+	}
+
+	/**
+	 * Remove the directory holding the site's scan /out directories. Only with the site lock held and the scan container removed.
+	 *
+	 * @param string $parent temp_parent().
+	 */
+	protected function remove_site_temp( $parent ) {
+		$dir = "$parent/{$this->site}";
+		if ( is_dir( $dir ) && ! is_link( $dir ) ) {
+			$this->remove_tree( $dir );
 		}
 	}
 
@@ -3369,9 +3386,7 @@ class Site_PHP_Compat {
 			foreach ( $files as $file ) {
 				@unlink( $file ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- usually missing.
 			}
-			if ( is_dir( "$parent/{$this->site}" ) && ! is_link( "$parent/{$this->site}" ) ) {
-				$this->remove_tree( "$parent/{$this->site}" );
-			}
+			$this->remove_site_temp( $parent );
 		}
 
 		return null;

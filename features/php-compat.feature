@@ -514,7 +514,7 @@ Feature: Check the PHP compatibility of a site's code
       """
     And the docker container "ee-php-compat-bh-site-command-184.test" should not exist
 
-  Scenario: --cancel stops the container of a killed check that still runs
+  Scenario: --cancel stops the container of a check and removes its temporary directory
     Given the compat-scanner image is available
     And the site "bh-site-command-184.test" exists, created with "--type=php"
     And I write "<?php\nfunction bh_compat_ok() { return 1; }\n" to the file "{SITES_DIR}/bh-site-command-184.test/app/htdocs/clean/ok.php"
@@ -528,6 +528,7 @@ Feature: Check the PHP compatibility of a site's code
       {"v":1,"status":"cancelled","cancel":true,"site":"bh-site-command-184.test"}
       """
     And the docker container "ee-php-compat-bh-site-command-184.test" should not exist
+    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should not exist
     And the file "{EE_ROOT_DIR}/tmp/php-compat/.cancel/bh-site-command-184.test" should not exist
     When I run 'bin/ee site php-compat bh-site-command-184.test --cancel'
     Then the command should succeed
@@ -540,9 +541,8 @@ Feature: Check the PHP compatibility of a site's code
     Then the command should succeed
     And the JSON field "status" in STDOUT should be "ok"
     And the JSON field "safe_to_upgrade" in STDOUT should be "true"
-    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should not exist
 
-  Scenario: --cancel removes the stopped container of a killed check
+  Scenario: --cancel removes the stopped container and directory of a killed check
     Given the compat-scanner image is available
     And the site "bh-site-command-184.test" exists, created with "--type=php"
     And a killed php-compat scan of site "bh-site-command-184.test" left its temporary directory and container behind
@@ -553,8 +553,7 @@ Feature: Check the PHP compatibility of a site's code
       No check of bh-site-command-184.test is running.
       """
     And the docker container "ee-php-compat-bh-site-command-184.test" should not exist
-    # Its temporary directory is the next check's to remove.
-    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should exist
+    And the directory "{EE_ROOT_DIR}/tmp/php-compat/bh-site-command-184.test" should not exist
 
   Scenario: --cancel of a site that doesn't exist is refused
     When I run 'bin/ee site php-compat bh-site-command-missing.test --cancel'
