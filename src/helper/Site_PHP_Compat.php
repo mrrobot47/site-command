@@ -20,7 +20,8 @@ class Site_PHP_Compat {
 
 	const IMAGE            = 'easyengine/compat-scanner';
 	const SITE_TYPES       = [ 'wp', 'php' ];
-	const DEFAULT_TIMEOUT  = 7200;
+	const DEFAULT_TIMEOUT  = 14400;
+	const TIMEOUT_HINT     = '; run it again with a larger --timeout';
 	const ESTIMATE_TIMEOUT = 120;
 	// Docker's own start and teardown on top of the container's deadline, which normally fires first.
 	const PROCESS_MARGIN = 60;
@@ -586,7 +587,7 @@ SH;
 		$this->active_container = $name;
 		$run                    = $this->docker( $this->docker_run_args( 'scan', $image, $site_data, $code, $out, $timeout ), $timeout + self::PROCESS_MARGIN, true );
 		if ( $run['timed_out'] ) {
-			return $this->doc( 'tool_error', "timed out after $timeout s" );
+			return $this->doc( 'tool_error', "timed out after $timeout s" . self::TIMEOUT_HINT );
 		}
 
 		// Docker refuses a taken name before creating anything, so nothing is printed, and the other container exists.
@@ -600,6 +601,9 @@ SH;
 		$doc = empty( $run['overflow'] ) ? $this->parse_document( $run['stdout'] ) : null;
 		if ( null === $doc || ! $this->valid_scan_doc( $doc ) ) {
 			return $this->doc( 'tool_error', self::exit_detail( $run, 'without a valid result' ) );
+		}
+		if ( 'tool_error' === $doc['status'] && 0 === strpos( $doc['detail'], 'timed out after ' ) ) {
+			return $this->doc( 'tool_error', $doc['detail'] . self::TIMEOUT_HINT );
 		}
 		if ( 'ok' !== $doc['status'] ) {
 			return $this->doc( $doc['status'], 'tool_error' === $doc['status'] ? $doc['detail'] : null );

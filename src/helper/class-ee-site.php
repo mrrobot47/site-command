@@ -3378,7 +3378,7 @@ abstract class EE_Site_Command {
 	 * : Also write the full report, with every error and warning, as JSON to this absolute path: the JSON summary's fields (the same verdict) plus every component and its findings. A finding left out of the verdict stays in its component, marked `"ignored": true`, and its file is listed under `ignored`. The file is owned by root with mode 0600 and replaces an existing one. It is written only when the check finishes with a result (status ok); otherwise an existing file is left as it was. Its directory and every parent must be owned by root and not writable by other users (a sticky directory such as /tmp is fine). Not with --estimate.
 	 *
 	 * [--timeout=<seconds>]
-	 * : Time limit for the scan itself, in seconds. A scan that hits it reports tool_error and no verdict. Pulling the scanner image on first use isn't counted. Default: 7200. Not with --estimate.
+	 * : Time limit for the scan itself, in seconds. A scan that hits it reports tool_error and no verdict. Pulling the scanner image on first use isn't counted. Default: 14400 (4 hours). Not with --estimate.
 	 *
 	 * [--cancel]
 	 * : Stop the site's running check and remove what it left behind, then exit. Prints cancelled when a check was stopped (that check then reports cancelled, with no verdict and no --output file) and not_running when none was running. Waits up to 60 seconds for the stopped check to clean up. An estimate isn't stopped. Not with --php, --estimate, --output or --timeout.
