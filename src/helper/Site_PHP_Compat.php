@@ -484,20 +484,8 @@ class Site_PHP_Compat {
 			return $this->doc( 'tool_error', $doc['detail'] . self::TIMEOUT_HINT );
 		}
 		if ( 'no_code_found' === $doc['status'] && $this->ee_entries ) {
-			// This check's own entries still count: an empty scan, so "can't confirm" rather than "no code".
-			$doc           = array_fill_keys( self::SUMMARY_INTS, 0 ) + $doc;
-			$doc['status'] = 'ok';
-			$doc['tool']   = [
-				'image' => $image,
-			];
-			$report        = [
-				'components'            => [],
-				'not_checked'           => [],
-				'wordpress_installs'    => [],
-				'excluded_old_releases' => [],
-				'phars'                 => [],
-				'phar_named_by'         => null,
-			];
+			// This check's own entries still count: "can't confirm" rather than "no code".
+			list( $doc, $report ) = self::empty_scan( $doc, $image );
 		} elseif ( 'ok' !== $doc['status'] ) {
 			return $this->doc( $doc['status'], 'tool_error' === $doc['status'] ? $doc['detail'] : null );
 		} else {
@@ -534,6 +522,30 @@ class Site_PHP_Compat {
 			'doc'    => $summary,
 			'report' => $report,
 		];
+	}
+
+	/**
+	 * @param array  $doc   The scanner's no_code_found answer.
+	 * @param string $image Scanner image with its tag.
+	 *
+	 * @return array [ summary, report ] of an ok scan that found nothing.
+	 */
+	protected static function empty_scan( array $doc, $image ) {
+		$doc           = array_fill_keys( self::SUMMARY_INTS, 0 ) + $doc;
+		$doc['status'] = 'ok';
+		$doc['tool']   = [
+			'image' => $image,
+		];
+		$report        = [
+			'components'            => [],
+			'not_checked'           => [],
+			'wordpress_installs'    => [],
+			'excluded_old_releases' => [],
+			'phars'                 => [],
+			'phar_named_by'         => null,
+		];
+
+		return [ $doc, $report ];
 	}
 
 	/**
@@ -2642,16 +2654,21 @@ class Site_PHP_Compat {
 	protected function read_installs( array $report ) {
 		$this->wordpress      = null;
 		$this->other_installs = [];
-		$supported            = self::supported_branches( $this->target );
+		// The scanner left out the core of every other install it didn't list as nested_wordpress (named relative to /var/www).
+		$nested = [];
+		foreach ( $report['not_checked'] as $entry ) {
+			if ( 'nested_wordpress' === $entry['reason'] ) {
+				$nested[] = '/' === substr( $entry['slug'], 0, 1 ) ? $entry['slug'] : rtrim( '/var/www/' . $entry['slug'], '/' );
+			}
+		}
 		foreach ( $report['wordpress_installs'] as $install ) {
-			$branch = preg_match( '/^(\d+\.\d+)/', $install['version'], $m ) ? $m[1] : null;
 			if ( $install['live'] ) {
 				$this->wordpress = [
 					'dir'     => $install['dir'],
 					'version' => $install['version'],
-					'branch'  => $branch,
+					'branch'  => preg_match( '/^(\d+\.\d+)/', $install['version'], $m ) ? $m[1] : null,
 				];
-			} elseif ( in_array( $branch, $supported, true ) ) {
+			} elseif ( ! in_array( $install['dir'], $nested, true ) ) {
 				$this->other_installs[] = $install;
 			}
 		}
