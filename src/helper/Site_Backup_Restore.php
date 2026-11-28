@@ -2588,7 +2588,10 @@ DEALLOCATE PREPARE ee_stmt;
 	 * replaces app/; the lock goes with the process. Shared: php-compat holds it exclusive, so it can tell a restore from a check.
 	 */
 	private function hold_scan_lock() {
-		$message = sprintf( 'A php-compat check or estimate, `ee site php-compat %1$s --cancel` or `ee site delete %1$s` holds the site\'s lock (a check reads the files a restore replaces). Wait for it to finish or stop it with `ee site php-compat %1$s --cancel`, then run the restore again.', $this->site_data['site_url'] );
+		$holders = 'A php-compat check or estimate, `ee site php-compat %1$s --cancel` or `ee site delete %1$s`';
+		$why     = 'holds the site\'s lock (a check reads the files a restore replaces)';
+		$next    = 'Wait for it to finish or stop it with `ee site php-compat %1$s --cancel`, then run the restore again.';
+		$message = sprintf( "$holders $why. $next", $this->site_data['site_url'] );
 		$handle  = @fopen( $this->site_data['site_fs_path'], 're' ); // phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- handled below.
 		// A --cancel holds it only for a moment: try for a few seconds before refusing.
 		$locked = false;
