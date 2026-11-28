@@ -731,7 +731,11 @@ class Site_PHP_Compat {
 		}
 		$this->php_image     = isset( $info['Config']['Image'] ) ? (string) $info['Config']['Image'] : '';
 		$this->container_php = preg_match( '#^easyengine/php(\d+\.\d+):#', $this->php_image, $m ) ? $m[1] : null;
-		$this->command_settings( $info['Config'] );
+		$this->command_settings( $info['Config'], isset( $info['Image'] ) ? (string) $info['Image'] : '' );
+		if ( ! empty( $info['HostConfig']['GroupAdd'] ) ) {
+			// PHP may then read files the scanner's uid 33 can't, which the scanner skips without an entry.
+			$this->ee_entries[] = [ 'php container groups', 'the php container\'s user has extra groups, so PHP may read files this check can\'t' ];
+		}
 		foreach ( $info['Mounts'] as $mount ) {
 			$dst = isset( $mount['Destination'] ) ? rtrim( (string) $mount['Destination'], '/' ) : '';
 			$src = isset( $mount['Source'] ) ? (string) $mount['Source'] : '';
@@ -880,19 +884,25 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * Settings on the php container's command line, or an ini path in its environment, which this check can't follow.
+	 * Settings on the php container's command line, a command other than its image's, or an ini path in its environment,
+	 * which this check can't follow.
 	 *
-	 * @param array $config docker inspect Config.
+	 * @param array  $config docker inspect Config.
+	 * @param string $image  ID of the container's image.
 	 */
-	protected function command_settings( array $config ) {
+	protected function command_settings( array $config, $image ) {
 		$config += [
 			'Entrypoint' => [],
 			'Cmd'        => [],
 			'Env'        => [],
 		];
 		$args    = array_merge( (array) $config['Entrypoint'], (array) $config['Cmd'] );
-		if ( preg_grep( '/^(?:-[dcy]|--define|--php-ini|--fpm-config)/', array_map( 'strval', $args ) ) ) {
+		// Also inside one argument, as in `bash -lc "php-fpm -d …"`.
+		if ( preg_grep( '/(?:^|\s)(?:-[dcy]|--define|--php-ini|--fpm-config)/', array_map( 'strval', $args ) ) ) {
 			$this->settings[] = 'PHP settings on the php container\'s command line';
+		} elseif ( $args !== $this->image_command( $image ) ) {
+			// A wrapper script can set anything before PHP starts.
+			$this->settings[] = 'a command or entrypoint other than its image\'s on the php container';
 		}
 		foreach ( (array) $config['Env'] as $pair ) {
 			$name = strtok( (string) $pair, '=' );
@@ -900,6 +910,21 @@ class Site_PHP_Compat {
 				$this->settings[] = "$name in the php container's environment";
 			}
 		}
+	}
+
+	/**
+	 * @param string $image Image ID.
+	 *
+	 * @return string[]|null Its entrypoint and command, or null when they can't be read.
+	 */
+	protected function image_command( $image ) {
+		$run    = $this->docker( [ 'docker', 'image', 'inspect', '--format', '{{json .Config}}', $image ], 60 );
+		$config = 0 === $run['code'] ? json_decode( trim( $run['stdout'] ), true ) : null;
+		if ( ! is_array( $config ) ) {
+			return null;
+		}
+
+		return array_merge( (array) ( $config['Entrypoint'] ?? [] ), (array) ( $config['Cmd'] ?? [] ) );
 	}
 
 	/**
