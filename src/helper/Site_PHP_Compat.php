@@ -1072,6 +1072,10 @@ class Site_PHP_Compat {
 			$line( $long ? null : rtrim( $piece, "\r\n" ) );
 			$long = false;
 		}
+		// A last line of exactly LINE_BYTES - 1 bytes without a line break ends no piece above.
+		if ( $long ) {
+			$line( null );
+		}
 		fclose( $handle );
 	}
 
