@@ -29,8 +29,11 @@ class Site_PHP_Compat {
 	// Estimate tuning passed to the scanner (its defaults: 0.1 and 1.5), from runner and host measurements on 2026-11-24.
 	const ESTIMATE_SECONDS_PER_BATCH = '0.5';
 	const ESTIMATE_HIGH_FACTOR       = '2.5';
-	// Refreshing a tag that is already local; past it the local copy serves.
+	// Replacing a local copy whose contract label is wrong.
 	const REPULL_TIMEOUT = 300;
+	// The scanner interface this code reads (env, report keys), as the image's label states it.
+	const CONTRACT_LABEL = 'io.easyengine.compat-scanner.contract';
+	const CONTRACT       = '2';
 	// How long --cancel waits for the stopped scan to clean up and release the site lock.
 	const CANCEL_WAIT = 60;
 	// A live scan takes the request within about 0.2 s; one that hasn't after this can't act on it.
@@ -3823,37 +3826,48 @@ SH;
 	}
 
 	/**
-	 * Pull the pinned tag before each check, so a host never keeps an outdated image under it (a tag can be rebuilt); a local
-	 * copy serves when the pull fails. Most servers never run a check, so a fresh install doesn't pull it.
+	 * Use the pinned scanner image when its contract label is the one this EasyEngine reads; pull it only when it is
+	 * missing or the label differs, so a host contacts the registry once per tag and contract.
 	 *
 	 * @param string $image Image with tag.
 	 *
-	 * @return string|null tool_error detail, or null when the image is there.
+	 * @return string|null tool_error detail, or null when the image is there and matches.
 	 */
 	protected function ensure_image( $image ) {
-		$inspect = $this->docker( [ 'docker', 'image', 'inspect', '--format', '{{.Id}} {{len .RepoDigests}}', $image ], 60 );
-		$present = 0 === $inspect['code'];
-		// Built here, never pulled (no registry digest): a local test build, which a pull would replace.
-		if ( $present && preg_match( '/^\S+ 0$/', trim( $inspect['stdout'] ) ) ) {
-			EE::debug( "Using the local build of $image." );
-
+		$contract = $this->image_contract( $image );
+		if ( self::CONTRACT === $contract ) {
 			return null;
 		}
+		$mismatch = "the scanner image doesn't match this EasyEngine; run `docker pull $image` and try again";
+		$timeout  = null === $contract ? self::PULL_TIMEOUT : self::REPULL_TIMEOUT;
 		EE::debug( "Pulling $image." );
-		$pull = $this->docker( [ 'docker', 'pull', '--quiet', $image ], $present ? self::REPULL_TIMEOUT : self::PULL_TIMEOUT, true );
-		if ( 0 === $pull['code'] && ! $pull['timed_out'] ) {
-			$this->remove_other_tags( $image );
+		$pull = $this->docker( [ 'docker', 'pull', '--quiet', $image ], $timeout, true );
+		if ( 0 !== $pull['code'] || $pull['timed_out'] ) {
+			$why = $pull['timed_out'] ? "timed out after $timeout s" : self::first_line( $pull['stderr'] );
+			if ( null !== $contract ) {
+				return $mismatch;
+			}
 
+			return 'image pull failed' . ( '' === $why ? '' : ": $why" );
+		}
+		$this->remove_other_tags( $image );
+
+		return self::CONTRACT === $this->image_contract( $image ) ? null : $mismatch;
+	}
+
+	/**
+	 * @param string $image Image with tag.
+	 *
+	 * @return string|null Its contract label, '' when it has none, or null when the image isn't there.
+	 */
+	protected function image_contract( $image ) {
+		$run = $this->docker( [ 'docker', 'image', 'inspect', '--format', '{{json .Config.Labels}}', $image ], 60 );
+		if ( 0 !== $run['code'] ) {
 			return null;
 		}
-		$why = $pull['timed_out'] ? 'timed out after ' . ( $present ? self::REPULL_TIMEOUT : self::PULL_TIMEOUT ) . ' s' : self::first_line( $pull['stderr'] );
-		if ( $present ) {
-			EE::debug( "Could not pull $image ($why); using the local copy." );
+		$labels = json_decode( trim( $run['stdout'] ), true );
 
-			return null;
-		}
-
-		return 'image pull failed' . ( '' === $why ? '' : ": $why" );
+		return isset( $labels[ self::CONTRACT_LABEL ] ) && is_string( $labels[ self::CONTRACT_LABEL ] ) ? $labels[ self::CONTRACT_LABEL ] : '';
 	}
 
 	/**
