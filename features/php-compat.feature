@@ -372,6 +372,30 @@ Feature: Check the PHP compatibility of a site's code
     And STDOUT should contain "    PHPCompatibility.FunctionUse.RemovedFunctions.eachDeprecatedRemoved"
 
   @wp
+  Scenario: PHP config and extra groups a user compose file gives the php container make the verdict "can't confirm"
+    Given the compat-scanner image is available
+    And the site "bh-site-command-196.test" exists, created with "--type=wp"
+    # The site's own php/ config copied, plus a prepend in its conf.d, mounted over /usr/local/etc/php: PHP reads that conf.d.
+    When I run 'cd {SITES_DIR}/bh-site-command-196.test && cp -a config/php/php php-own && printf "auto_prepend_file = /usr/local/etc/php/prepend.php\n" > php-own/conf.d/zz-prepend.ini && printf "<?php\n" > php-own/prepend.php && chmod -R a+rX php-own'
+    Then the command should succeed
+    And I write "services:\n  php:\n    volumes:\n      - ./php-own:/usr/local/etc/php\n" to the file "{SITES_DIR}/bh-site-command-196.test/user-docker-compose/php.yml"
+    When I run 'bin/ee site enable bh-site-command-196.test --refresh --force'
+    Then the command should succeed
+    When I run 'bin/ee site php-compat bh-site-command-196.test --php=8.4'
+    Then the command should succeed
+    And STDOUT should contain "Can't confirm bh-site-command-196.test is safe for PHP 8.4"
+    And STDOUT should contain "/usr/local/etc/php/prepend.php"
+    When I run 'rm {SITES_DIR}/bh-site-command-196.test/user-docker-compose/php.yml'
+    And I write "services:\n  php:\n    group_add:\n      - \"4242\"\n" to the file "{SITES_DIR}/bh-site-command-196.test/user-docker-compose/groups.yml"
+    And I run 'bin/ee site enable bh-site-command-196.test --refresh --force'
+    Then the command should succeed
+    When I run 'bin/ee site php-compat bh-site-command-196.test --php=8.4 --format=json'
+    Then the command should succeed
+    And the JSON field "status" in STDOUT should be "ok"
+    And the JSON field "safe_to_upgrade" in STDOUT should not be "true"
+    And STDOUT should contain "{"type":"other","slug":"","branch":null,"file":"php container groups","reason":"unreadable"}"
+
+  @wp
   Scenario: WordPress in its own directory is found through the index.php nginx serves
     Given the compat-scanner image is available
     And the site "bh-site-command-192.test" exists, created with "--type=wp"

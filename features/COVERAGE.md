@@ -1,6 +1,6 @@
 # site-command Behat coverage
 
-Suite for `easyengine/site-command` (the `ee site` command and the html site type, plus `ee site php-compat` on php and wp sites). 19 features, 195 scenarios (235 with outlines expanded): main lane 212, `@wp` 12, `@le` 11. Run it the CI way (`.github/workflows/behat.yml`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
+Suite for `easyengine/site-command` (the `ee site` command and the html site type, plus `ee site php-compat` on php and wp sites). 19 features, 196 scenarios (236 with outlines expanded): main lane 212, `@wp` 13, `@le` 11. Run it the CI way (`.github/workflows/behat.yml`): the files are copied into a core checkout's `features/` and core's `vendor/bin/behat` runs from the core root as root.
 
 ## Tags
 
@@ -12,7 +12,7 @@ Suite for `easyengine/site-command` (the `ee site` command and the html site typ
 | `@remote` | 10 | Uses the REAL rclone remote (`rclone-path` in config.yml). Touches only `<rclone-path>/bh-site-command-*`: the rclone path is listed first and only listed suite directories are purged (per site before a scenario, all of them after the feature). |
 | `@le` | 11 | Let's Encrypt issuance on `*.ee4-test.rt.gw`. Locally: real LE, at most 4 certificates per full run; names contain `{RUN_ID}`, so repeated runs never hit the duplicate-certificate limit. On CI all 11 run against Pebble (`.github/behat/pebble-setup.sh`: EE's hardcoded LE host is redirected to Pebble, `{LE_ISSUER}` comes from `EE_BEHAT_LE_ISSUER`). The failed-alias rollback and the ACME cleanup on delete are regression checks for EasyEngine/site-command#505. |
 | `@le-real` | 0 | Needs the public LE service itself (rate limits, the real chain); never runs on CI. None so far: every `@le` scenario works on Pebble. |
-| `@wp` | 12 | Needs the `wp` site type (site-type-wp in the core checkout) and `ee` on PATH; slow. |
+| `@wp` | 13 | Needs the `wp` site type (site-type-wp in the core checkout) and `ee` on PATH; slow. |
 
 Default safe run: `--tags='~@le&&~@remote&&~@destructive&&~@wp'`.
 
@@ -228,6 +228,7 @@ Every scan scenario needs core's `img-versions.json` to pin `easyengine/compat-s
 | Table: verdict line first ("Not safe", or "No PHP <v> problems found in …" scoped to what was checked; never "Safe to upgrade"), every error with file, line and sniff, static-analysis line last | covered ("Not safe" part @wp) | compat: The table starts with the verdict line...; The table of a php site without errors says what was checked, never "safe" |
 | WordPress core gate: version.php read, too-old core is "Not safe", undeclared PHP (8.6) is "Can't confirm", JSON `wordpress` object | covered @wp | compat: A WordPress site's verdict covers what was checked, and core by its version |
 | "Can't confirm" verdict line from unchecked files | not covered | needs a file uid 33 can't read; the scanner side is in the dockerfiles fixture test |
+| "Can't confirm" from the php container a user compose file changes: a PHP config directory mounted over /usr/local/etc/php with a prepend in its conf.d, and `group_add` | covered @wp | compat: PHP config and extra groups a user compose file gives the php container make the verdict "can't confirm" |
 | `--output`: root-owned 0600, replaces an existing file, same fields as the summary, `report`/`report_bytes` | covered | compat: --output writes a root-owned 0600 report... |
 | No finding text in ee.log | covered | compat: ee.log holds no finding text after a check with findings |
 | html site refused, bad or missing `--php` (dispatcher and command checks), flags `--cancel` doesn't take | covered | compat: An html site is refused; A bad --php value, a missing one, or a flag --cancel does not take is rejected (outline) |
@@ -247,7 +248,7 @@ DB and container migrations under `migrations/` (core upgrade flow), the AcmePhp
 
 ## Coverage estimate
 
-Counting the rows above as items: 137 items, 100 covered, 1 partial, 36 not covered (8 of them, marked "not covered yet", are open bugs whose scenarios come back with their fixes), i.e. about 73% of the inventory. Every user-facing subcommand and option of the html type has at least one scenario except `ssl-renew --force`, `clone --ssl/--wildcard` and a live `share`.
+Counting the rows above as items: 138 items, 101 covered, 1 partial, 36 not covered (8 of them, marked "not covered yet", are open bugs whose scenarios come back with their fixes), i.e. about 73% of the inventory. Every user-facing subcommand and option of the html type has at least one scenario except `ssl-renew --force`, `clone --ssl/--wildcard` and a live `share`.
 
 ## Known bugs left out
 
