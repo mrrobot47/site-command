@@ -477,8 +477,11 @@ class Site_PHP_Compat {
 		}
 		if ( 'no_code_found' === $doc['status'] && $this->ee_entries ) {
 			// This check's own entries still count: an empty scan, so "can't confirm" rather than "no code".
-			$doc           = array_fill_keys( self::SUMMARY_INTS, 0 ) + [ 'tool' => [ 'image' => $image ] ] + $doc;
+			$doc           = array_fill_keys( self::SUMMARY_INTS, 0 ) + $doc;
 			$doc['status'] = 'ok';
+			$doc['tool']   = [
+				'image' => $image,
+			];
 			$report        = [
 				'components'            => [],
 				'not_checked'           => [],
