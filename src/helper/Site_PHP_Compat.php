@@ -162,7 +162,7 @@ class Site_PHP_Compat {
 	/** @var string|null Image of the running php container; null when it doesn't run. */
 	protected $php_image;
 
-	/** @var string[] Old releases nginx doesn't serve, relative to app/ (display only). */
+	/** @var string[] Old releases the scanner left out because nginx doesn't serve them (container paths). */
 	protected $old_releases = [];
 
 	/** @var bool Whether nginx serves above a `current` release layout, so every release is scanned. */
@@ -681,7 +681,8 @@ class Site_PHP_Compat {
 		if ( 'wp' === $site_data->site_type ) {
 			$this->scan_path = '/var/www/' . $this->wordpress_hint( $code, $rel );
 		}
-		$this->old_releases = $this->old_releases( $code );
+		$served_rel                = ltrim( substr( $this->served, strlen( '/var/www' ) ), '/' );
+		$this->old_releases_served = '' !== $this->served && self::release_layout_in( $code, $served_rel );
 		$this->read_php_settings( $config );
 		if ( $this->settings ) {
 			$this->ee_entries[] = [ 'PHP settings', 'PHP settings this check can\'t follow: ' . implode( '; ', array_unique( $this->settings ) ) ];
@@ -1227,55 +1228,21 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * Old releases the scanner leaves out: those beside the live release of a `current` link on the served root's path,
-	 * only when what nginx serves is certain. Display only; the scanner decides what it reads.
+	 * Whether a `current` link in this directory leads into a real releases/ beside it: nginx serving it serves every release.
 	 *
 	 * @param string $code Real path of the site's app/.
+	 * @param string $rel  Directory relative to app/.
 	 *
-	 * @return string[] Their paths relative to app/.
+	 * @return bool
 	 */
-	protected function old_releases( $code ) {
-		$this->old_releases_served = false;
-		if ( '' === $this->served ) {
-			return [];
-		}
-		$parts = explode( '/', ltrim( substr( $this->served, strlen( '/var/www' ) ), '/' ) );
-		foreach ( $parts as $i => $part ) {
-			if ( 'current' === $part ) {
-				$old = self::other_releases( $code, implode( '/', array_slice( $parts, 0, $i ) ) );
-				if ( null !== $old ) {
-					return $old;
-				}
-			}
-		}
-		// nginx serves above a release layout, so every release is scanned.
-		$this->old_releases_served = null !== self::other_releases( $code, implode( '/', $parts ) );
-
-		return [];
-	}
-
-	/**
-	 * @param string $code Real path of the site's app/.
-	 * @param string $dir  Directory relative to app/ that may hold `current` and `releases/`.
-	 *
-	 * @return string[]|null The releases other than the live one (relative to app/), or null when there is no release layout.
-	 */
-	protected static function other_releases( $code, $dir ) {
-		$base     = self::resolve_in( $code, $dir );
-		$live     = self::resolve_in( $code, ltrim( "$dir/current", '/' ) );
-		$releases = null === $base ? null : "$base/releases";
-		if ( null === $live || ! is_link( "$base/current" ) || is_link( $releases ) || ! is_dir( $live ) || dirname( $live ) !== $releases ) {
-			return null;
-		}
-		$old = [];
-		foreach ( array_diff( (array) scandir( $releases ), [ '.', '..' ] ) as $name ) {
-			$release = "$releases/$name";
-			if ( $release !== $live && ! is_link( $release ) && is_dir( $release ) ) {
-				$old[] = substr( $release, strlen( $code ) + 1 );
-			}
+	protected static function release_layout_in( $code, $rel ) {
+		$base = self::resolve_in( $code, $rel );
+		$live = self::resolve_in( $code, ltrim( "$rel/current", '/' ) );
+		if ( null === $base || null === $live || ! is_link( "$base/current" ) || is_link( "$base/releases" ) ) {
+			return false;
 		}
 
-		return $old;
+		return is_dir( $live ) && dirname( $live ) === "$base/releases";
 	}
 
 	/**
@@ -2223,13 +2190,15 @@ class Site_PHP_Compat {
 	 *
 	 * @param array $report Decoded report.
 	 *
-	 * @return bool Whether wordpress_installs (at most one live), phars and phar_named_by are there and well-formed.
+	 * @return bool Whether wordpress_installs (at most one live), excluded_old_releases, phars and phar_named_by are well-formed.
 	 */
 	private static function valid_installs_and_phars( array $report ) {
-		if ( ! isset( $report['wordpress_installs'], $report['phars'] ) || ! array_key_exists( 'phar_named_by', $report ) ) {
+		$keys = [ 'wordpress_installs', 'excluded_old_releases', 'phars', 'phar_named_by' ];
+		if ( array_diff( $keys, array_keys( $report ) ) ) {
 			return false;
 		}
-		if ( ! is_array( $report['wordpress_installs'] ) || ! is_array( $report['phars'] ) ) {
+		$lists = [ $report['wordpress_installs'], $report['phars'], $report['excluded_old_releases'] ];
+		if ( array_filter( $lists, 'is_array' ) !== $lists || ! self::all_strings( $report['excluded_old_releases'] ) ) {
 			return false;
 		}
 		$live = 0;
@@ -2241,11 +2210,20 @@ class Site_PHP_Compat {
 			$live += $install['live'] ? 1 : 0;
 		}
 		$named = $report['phar_named_by'];
-		if ( $live > 1 || count( array_filter( $report['phars'], 'is_string' ) ) !== count( $report['phars'] ) ) {
+		if ( $live > 1 || ! self::all_strings( $report['phars'] ) ) {
 			return false;
 		}
 
 		return null === $named || ( is_string( $named ) && [] === $report['phars'] );
+	}
+
+	/**
+	 * @param array $list List.
+	 *
+	 * @return bool Whether every item is a string.
+	 */
+	private static function all_strings( array $list ) {
+		return count( array_filter( $list, 'is_string' ) ) === count( $list );
 	}
 
 	/**
@@ -2393,7 +2371,7 @@ class Site_PHP_Compat {
 		unset( $doc['checked'], $doc['not_checked'], $doc['wordpress'], $doc['ignored'] );
 		$excluded = [];
 		foreach ( array_slice( $this->old_releases, 0, self::NOT_CHECKED_STDOUT ) as $dir ) {
-			$excluded[] = self::cut( self::clean( $this->app_path . $dir ) );
+			$excluded[] = self::cut( $this->host_name( $dir ) );
 		}
 		$doc['checked']           = [
 			'dir'                   => self::clean( rtrim( $this->app_path, '/' ) ),
@@ -2529,6 +2507,18 @@ class Site_PHP_Compat {
 			];
 		}
 		$this->phar_named_by = $report['phar_named_by'];
+		$this->old_releases  = $report['excluded_old_releases'];
+	}
+
+	/**
+	 * @param string $path Container path from the report.
+	 *
+	 * @return string The same place under the site's app/, cleaned; a path outside /var/www as it is.
+	 */
+	protected function host_name( $path ) {
+		$name = 0 === strpos( $path, '/var/www/' ) ? $this->app_path . substr( $path, strlen( '/var/www/' ) ) : $path;
+
+		return self::clean( $name );
 	}
 
 	/**
@@ -2972,7 +2962,7 @@ class Site_PHP_Compat {
 				$line  .= ' ' . ( $why ? $why[0] : "WordPress $branch supports PHP $target, by WordPress's own list." );
 			}
 			if ( $this->old_releases ) {
-				$old   = self::clean( implode( ', ', preg_filter( '/^/', $this->app_path, $this->old_releases ) ) );
+				$old   = implode( ', ', array_map( [ $this, 'host_name' ], $this->old_releases ) );
 				$line .= " Old releases nginx doesn't serve aren't checked: $old.";
 			}
 			return [ $line . ( $doc['warnings'] > 0 ? ' ' . self::count_of( $doc['warnings'], 'warning' ) . '.' : '' ) ];
