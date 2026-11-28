@@ -1136,8 +1136,18 @@ class Site_PHP_Compat {
 		if ( null === $line ) {
 			return [ [ 'root', null ] ];
 		}
-		$line = preg_replace( '/#.*$/', '', $line );
-		preg_match_all( '/(?:^|[;{}])\s*(root|alias)(?:\s+([^;{}]*?)\s*(;)|\s*$|\s+[^;{}]*$)/', $line, $all, PREG_SET_ORDER );
+		// nginx reads `#` literally inside a regex or a quoted value: only one at a token start begins a comment.
+		$code = preg_replace( '/(?<![^\s;{}])#.*$/', '', $line );
+		if ( null !== $code && $code !== $line ) {
+			$bare = preg_replace( '/"(?:[^"\\\\]++|\\\\.)*+"|\'(?:[^\'\\\\]++|\\\\.)*+\'/', '', $code );
+			// That `#` was inside an open quote.
+			$code = null === $bare || false !== strpbrk( $bare, '"\'' ) ? null : $code;
+		}
+		// Possessive, so a long run of blanks can't exhaust PCRE's backtracking.
+		$pattern = '/(?:^|[;{}])\s*(root|alias)(?:\s++([^;{}]*?)\s*(;)|\s*$|\s+[^;{}]*$)/';
+		if ( null === $code || false === preg_match_all( $pattern, $code, $all, PREG_SET_ORDER ) ) {
+			return [ [ 'root', null ] ];
+		}
 		$found = [];
 		foreach ( $all as $m ) {
 			$found[] = [ $m[1], isset( $m[3] ) ? trim( $m[2], '"\'' ) : null ];
@@ -1187,7 +1197,12 @@ class Site_PHP_Compat {
 			$current = array_pop( $todo );
 			foreach ( self::entries( $current ) as $name ) {
 				$real = realpath( "$current/$name" );
-				if ( false === $real || isset( $seen[ $real ] ) ) {
+				if ( false === $real ) {
+					// A dangling link usually leads into the nginx container: not the host's, so not sure either.
+					$outside = $outside || is_link( "$current/$name" );
+					continue;
+				}
+				if ( isset( $seen[ $real ] ) ) {
 					continue;
 				}
 				$seen[ $real ] = true;
