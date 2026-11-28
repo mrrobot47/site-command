@@ -177,9 +177,7 @@ Feature: Check the PHP compatibility of a site's code
   Scenario: --output may be a directory another user owns
     Given the compat-scanner image is available
     And the site "bh-site-command-181.test" exists, created with "--type=php"
-    And I write "<?php
-each( $a );
-" to the file "{SITES_DIR}/bh-site-command-181.test/app/htdocs/legacy/legacy.php"
+    And I write "<?php\neach( $a );\n" to the file "{SITES_DIR}/bh-site-command-181.test/app/htdocs/legacy/legacy.php"
     And I make everything under "{SITES_DIR}/bh-site-command-181.test/app/htdocs/legacy" readable by everyone
     When I run 'mkdir -p {TMP}/home-u && chown 1000:1000 {TMP}/home-u && chmod 0755 {TMP}/home-u'
     And I run 'bin/ee site php-compat bh-site-command-181.test --php=8.4 --format=json --output={TMP}/home-u/r.json'
