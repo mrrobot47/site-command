@@ -192,8 +192,11 @@ class Site_PHP_Compat {
 	/** @var string The site's app/ with a trailing slash, for paths named in output. */
 	protected $app_path = '';
 
-	/** @var array[] Ignored: file and reason, and for Predis the count of its findings left out of the verdict. */
-	protected $ignored = [];
+	/** @var string[] Phars no scanned code names, cleaned and cut: listed as ignored. */
+	protected $phars = [];
+
+	/** @var int[] Errors of nginx-helper's bundled Predis left out of the verdict, by where the scanner reports each copy. */
+	protected $predis_ignored = [];
 
 	/** @var bool Whether the last lock_site() couldn't open the site directory (gone during a delete). */
 	protected $lock_unopenable = false;
@@ -2502,15 +2505,19 @@ class Site_PHP_Compat {
 				'core_files_checked' => false,
 			];
 		}
-		$doc['ignored'] = array_map(
-			function ( $entry ) {
-				return [
-					'file'   => $entry['file'],
-					'reason' => $entry['reason'],
-				];
-			},
-			$this->ignored
-		);
+		$doc['ignored'] = [];
+		foreach ( array_keys( $this->predis_ignored ) as $file ) {
+			$doc['ignored'][] = [
+				'file'   => self::cut( $file ),
+				'reason' => "nginx-helper's bundled Predis isn't loaded: the site's php image and config load the redis extension",
+			];
+		}
+		foreach ( $this->phars as $phar ) {
+			$doc['ignored'][] = [
+				'file'   => $phar,
+				'reason' => 'phar archive, not checked: no scanned code names a phar',
+			];
+		}
 		if ( $doc['errors'] > 0 || ( null !== $core && false === $core['supports'] ) ) {
 			$doc['safe_to_upgrade'] = false;
 		} elseif ( $doc['files_not_checked'] > 0 || ( null !== $core && null === $core['supports'] ) ) {
@@ -2598,12 +2605,9 @@ class Site_PHP_Compat {
 				$this->other_installs[] = $install;
 			}
 		}
-		$this->ignored = [];
+		$this->phars = [];
 		foreach ( $report['phars'] as $phar ) {
-			$this->ignored[] = [
-				'file'   => self::cut( self::clean( $phar ) ),
-				'reason' => 'phar archive, not checked: no scanned code names a phar',
-			];
+			$this->phars[] = self::cut( self::clean( $phar ) );
 		}
 		$this->phar_named_by = $report['phar_named_by'];
 		$this->old_releases  = $report['excluded_old_releases'];
@@ -2628,20 +2632,17 @@ class Site_PHP_Compat {
 	 * @param array $report Scanner report (the component's findings and counts are adjusted).
 	 */
 	protected function ignore_unused_predis( array &$doc, array &$report ) {
-		$this->predis_counts = null;
-		$at                  = null;
+		$this->predis_counts  = null;
+		$this->predis_ignored = [];
+		$copies               = [];
 		foreach ( $report['components'] as $i => $component ) {
-			$errors = array_filter(
-				$component['findings'],
-				function ( $finding ) {
-					return 'admin/predis.php' === $finding['file'] && 'ERROR' === $finding['type'];
+			foreach ( $component['findings'] as $j => $finding ) {
+				if ( 'ERROR' === $finding['type'] && self::is_predis( $component, $finding['file'] ) ) {
+					$copies[ $i ][ $finding['file'] ][] = $j;
 				}
-			);
-			if ( $errors && 'plugin' === $component['type'] && 'nginx-helper' === $component['slug'] && null === $component['branch'] ) {
-				$at = $i;
 			}
 		}
-		if ( null === $at || null === $this->wordpress ) {
+		if ( ! $copies ) {
 			return;
 		}
 		// Every EasyEngine php image builds redis, and the config templates from PHP 7.0 up load it.
@@ -2655,29 +2656,38 @@ class Site_PHP_Compat {
 		if ( null !== $this->predis_counts ) {
 			return;
 		}
-		$component = $report['components'][ $at ];
-		$dropped   = 0;
-		foreach ( $component['findings'] as $i => $finding ) {
-			// Kept in the report, marked: the --output file still shows what was ignored.
-			if ( 'admin/predis.php' === $finding['file'] && 'ERROR' === $finding['type'] ) {
-				++$dropped;
-				$component['findings'][ $i ]['ignored'] = true;
+		foreach ( $copies as $i => $files ) {
+			$component = $report['components'][ $i ];
+			foreach ( $files as $file => $errors ) {
+				foreach ( $errors as $j ) {
+					// Kept in the report, marked: the --output file still shows what was ignored.
+					$component['findings'][ $j ]['ignored'] = true;
+				}
+				$component['errors'] -= count( $errors );
+				$doc['errors']       -= count( $errors );
+				// Named as the table names a finding: the scanner reports no directory for a component.
+				$this->predis_ignored[ self::place( $component ) . ': ' . self::clean( $file ) ] = count( $errors );
 			}
+			if ( 0 === $component['errors'] ) {
+				--$doc['components_with_errors'];
+			}
+			$report['components'][ $i ] = $component;
 		}
-		$component['errors']        -= $dropped;
-		$report['components'][ $at ] = $component;
-		$doc['errors']              -= $dropped;
-		if ( 0 === $component['errors'] ) {
-			--$doc['components_with_errors'];
+	}
+
+	/**
+	 * @param array  $component Report component.
+	 * @param string $file      A finding's file, relative to the component.
+	 *
+	 * @return bool Whether it is nginx-helper's bundled Predis: in the plugin, or below a plugins/ directory of another
+	 *              component (a branch root's or Bedrock's web/app/plugins scanned as a directory).
+	 */
+	protected static function is_predis( array $component, $file ) {
+		if ( 'plugin' === $component['type'] && 'nginx-helper' === $component['slug'] ) {
+			return 'admin/predis.php' === $file;
 		}
-		array_unshift(
-			$this->ignored,
-			[
-				'file'   => self::cut( self::clean( $this->wordpress['dir'] . '/wp-content/plugins/nginx-helper/admin/predis.php' ) ),
-				'reason' => "nginx-helper's bundled Predis isn't loaded: the site's php image and config load the redis extension",
-				'count'  => $dropped,
-			]
-		);
+
+		return 1 === preg_match( '#(?:^|/)plugins/nginx-helper/admin/predis\.php$#', $file );
 	}
 
 	/**
@@ -3099,22 +3109,17 @@ class Site_PHP_Compat {
 		if ( $this->old_releases_served ) {
 			$lines[] = 'Old releases nginx serves were scanned; recreate the site with --public-dir=current to leave them out.';
 		}
-		foreach ( $this->ignored as $entry ) {
-			if ( isset( $entry['count'] ) ) {
-				$findings = self::count_of( $entry['count'], 'finding' );
-				$lines[]  = "Ignored $findings in nginx-helper's bundled Predis (admin/predis.php): "
-					. "the redis extension is loaded, so nginx-helper doesn't load it.";
-			}
+		if ( $this->predis_ignored ) {
+			$findings = self::count_of( array_sum( $this->predis_ignored ), 'finding' );
+			$lines[]  = "Ignored $findings in nginx-helper's bundled Predis (admin/predis.php): "
+				. "the redis extension is loaded, so nginx-helper doesn't load it.";
 		}
 		if ( null !== $this->predis_counts ) {
 			$lines[] = "nginx-helper's bundled Predis error counts: " . $this->predis_counts . '.';
 		}
-		$phars = array_column( array_filter( $this->ignored, function ( $entry ) {
-			return ! isset( $entry['count'] );
-		} ), 'file' );
-		if ( $phars ) {
-			$count   = self::count_of( count( $phars ), 'phar archive' );
-			$lines[] = "$count not checked; no scanned code names a phar: " . self::clean( implode( ', ', $phars ) ) . '.';
+		if ( $this->phars ) {
+			$count   = self::count_of( count( $this->phars ), 'phar archive' );
+			$lines[] = "$count not checked; no scanned code names a phar: " . implode( ', ', $this->phars ) . '.';
 		}
 		if ( null !== $this->phar_named_by ) {
 			$lines[] = 'Phar archives count as not checked: ' . self::clean( $this->phar_named_by ) . ' names a phar.';
