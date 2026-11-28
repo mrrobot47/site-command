@@ -48,8 +48,8 @@ Feature: Check the PHP compatibility of a site's code
   Scenario: A WordPress site's verdict covers what was checked, and core by its version
     Given the compat-scanner image is available
     And the site "bh-site-command-193.test" exists, created with "--type=wp"
-    # Pinned to a branch in the check's table, whatever WordPress the site got.
-    When I run 'sed -i "s#^.wp_version = .*#\$wp_version = \"6.8.3\";#" {SITES_DIR}/bh-site-command-193.test/app/htdocs/wp-includes/version.php'
+    # Pinned to a branch in the check's table, whatever WordPress the site got; quoted as WordPress writes it.
+    When I run 'sed -i "s#^.wp_version = .*#\$wp_version = \x276.8.3\x27;#" {SITES_DIR}/bh-site-command-193.test/app/htdocs/wp-includes/version.php'
     Then the command should succeed
     When I run 'bin/ee site php-compat bh-site-command-193.test --php=8.4 --format=json'
     Then the command should succeed
@@ -63,7 +63,7 @@ Feature: Check the PHP compatibility of a site's code
     And STDOUT should not contain "Safe to upgrade"
     And STDOUT should contain "WordPress core files (only its version is checked)"
     # A WordPress too old for the target is never fine, whatever the scan finds.
-    When I run 'sed -i "s#^.wp_version = .*#\$wp_version = \"6.1.1\";#" {SITES_DIR}/bh-site-command-193.test/app/htdocs/wp-includes/version.php'
+    When I run 'sed -i "s#^.wp_version = .*#\$wp_version = \x276.1.1\x27;#" {SITES_DIR}/bh-site-command-193.test/app/htdocs/wp-includes/version.php'
     Then the command should succeed
     When I run 'bin/ee site php-compat bh-site-command-193.test --php=8.4 --format=json --output={TMP}/report-193.json'
     Then the command should succeed
