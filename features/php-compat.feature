@@ -386,7 +386,7 @@ Feature: Check the PHP compatibility of a site's code
     And STDOUT should contain "Can't confirm bh-site-command-196.test is safe for PHP 8.4"
     And STDOUT should contain "/usr/local/etc/php/prepend.php"
     When I run 'rm {SITES_DIR}/bh-site-command-196.test/user-docker-compose/php.yml'
-    And I write "services:\n  php:\n    group_add:\n      - \"4242\"\n" to the file "{SITES_DIR}/bh-site-command-196.test/user-docker-compose/groups.yml"
+    And I write "services:\n  php:\n    group_add:\n      - 4242\n" to the file "{SITES_DIR}/bh-site-command-196.test/user-docker-compose/groups.yml"
     And I run 'bin/ee site enable bh-site-command-196.test --refresh --force'
     Then the command should succeed
     When I run 'bin/ee site php-compat bh-site-command-196.test --php=8.4 --format=json'
