@@ -475,12 +475,25 @@ class Site_PHP_Compat {
 		if ( 'tool_error' === $doc['status'] && 0 === strpos( $doc['detail'], 'timed out after ' ) ) {
 			return $this->doc( 'tool_error', $doc['detail'] . self::TIMEOUT_HINT );
 		}
-		if ( 'ok' !== $doc['status'] ) {
+		if ( 'no_code_found' === $doc['status'] && $this->ee_entries ) {
+			// This check's own entries still count: an empty scan, so "can't confirm" rather than "no code".
+			$doc           = array_fill_keys( self::SUMMARY_INTS, 0 ) + [ 'tool' => [ 'image' => $image ] ] + $doc;
+			$doc['status'] = 'ok';
+			$report        = [
+				'components'            => [],
+				'not_checked'           => [],
+				'wordpress_installs'    => [],
+				'excluded_old_releases' => [],
+				'phars'                 => [],
+				'phar_named_by'         => null,
+			];
+		} elseif ( 'ok' !== $doc['status'] ) {
 			return $this->doc( $doc['status'], 'tool_error' === $doc['status'] ? $doc['detail'] : null );
-		}
-		$report = $this->read_report( $out, $doc );
-		if ( ! is_array( $report ) ) {
-			return $this->doc( 'tool_error', null === $report ? self::exit_detail( $run, 'without a valid report' ) : $report );
+		} else {
+			$report = $this->read_report( $out, $doc );
+			if ( ! is_array( $report ) ) {
+				return $this->doc( 'tool_error', null === $report ? self::exit_detail( $run, 'without a valid report' ) : $report );
+			}
 		}
 		$this->read_installs( $report );
 		$this->ignore_unused_predis( $doc, $report );
