@@ -245,7 +245,7 @@ abstract class EE_Site_Command {
 
 		\EE::confirm( sprintf( 'Are you sure you want to delete %s?', $this->site_data['site_url'] ), $assoc_args );
 
-		// A running php-compat check mounts the site's code: stop it first, and drop what php-compat keeps for the site.
+		// A running php-compat check or estimate mounts the site's code: stop it first, and drop what php-compat keeps for the site.
 		// Kept on $this: the site lock it holds must last until this process ends.
 		$this->php_compat_check = new Site_PHP_Compat();
 		// Nothing is deleted yet: a signal while php-compat is stopped ends the delete without the rollback messages.
@@ -272,7 +272,7 @@ abstract class EE_Site_Command {
 			pcntl_signal( $signal, $handler );
 		}
 		if ( null !== $compat ) {
-			\EE::error( sprintf( 'Could not stop the php-compat check of %s (%s). Nothing was deleted.', $this->site_data['site_url'], $compat ) );
+			\EE::error( sprintf( 'Can\'t delete %s now: %s. Nothing was deleted.', $this->site_data['site_url'], $compat ) );
 		}
 
 		if ( $this->site_data['site_ssl'] ) {
@@ -3381,7 +3381,7 @@ abstract class EE_Site_Command {
 	 * : Time limit for the scan itself, in seconds. A scan that hits it reports tool_error and no verdict. Pulling the scanner image on first use isn't counted. Default: 14400 (4 hours). Not with --estimate.
 	 *
 	 * [--cancel]
-	 * : Stop the site's running check and remove what it left behind, then exit. Prints cancelled when a check was stopped (that check then reports cancelled, with no verdict and no --output file) and not_running when none was running. Waits up to 60 seconds for the stopped check to clean up. An estimate isn't stopped. Not with --php, --estimate, --output or --timeout.
+	 * : Stop the site's running check or estimate, then exit. Prints cancelled when one was stopped (it then reports cancelled, with no verdict and no --output file) and not_running when none was running. Waits up to 60 seconds for the stopped check to clean up. Not with --php, --estimate, --output or --timeout.
 	 *
 	 * ## EXAMPLES
 	 *
