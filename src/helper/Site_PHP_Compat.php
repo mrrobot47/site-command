@@ -692,8 +692,7 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * The site's php container as the scanner must see it (K1 to K10 of the plan): its mounts become binds, extra roots
-	 * or not-checked entries, and its PHP config sources are returned.
+	 * The site's php container as the scanner must see it: its mounts become binds, extra roots or not-checked entries.
 	 *
 	 * @param object $site_data Site record.
 	 * @param string $code      Real path of the site's app/.
@@ -785,7 +784,8 @@ class Site_PHP_Compat {
 			// A time zone file, a certificate, a socket: not site code.
 			return;
 		}
-		if ( '' === $src || false === $real || false !== strpbrk( $src . $dst, ",\"\n\r" ) ) {
+		// --mount takes CSV, and the scanner refuses a control character in COMPAT_EXTRA_ROOTS.
+		if ( '' === $src || false === $real || preg_match( '/[,"\x00-\x1F\x7F]/', $src . $dst ) ) {
 			$this->ee_entries[] = $unbindable;
 			return;
 		}
