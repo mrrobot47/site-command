@@ -2732,8 +2732,11 @@ class Site_PHP_Compat {
 				}
 				$component['errors'] -= count( $errors );
 				$doc['errors']       -= count( $errors );
-				// Named as the table names a finding: the scanner reports no directory for a component.
-				$this->predis_ignored[ self::place( $component ) . ': ' . self::clean( $file ) ] = count( $errors );
+				// The main content root's copy by its path; elsewhere the report names no directory, so named as the table does.
+				$main = 'plugin' === $component['type'] && null === $component['branch'] && null !== $this->wordpress;
+				$name = $main ? $this->wordpress['dir'] . "/wp-content/plugins/nginx-helper/$file" : self::place( $component ) . ": $file";
+
+				$this->predis_ignored[ self::clean( $name ) ] = count( $errors );
 			}
 			if ( 0 === $component['errors'] ) {
 				--$doc['components_with_errors'];
