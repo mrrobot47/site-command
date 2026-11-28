@@ -45,7 +45,7 @@ class Site_PHP_Compat {
 	const SCAN_STATUSES = [ 'ok', 'no_code_found', 'tool_error' ];
 	const SUMMARY_INTS  = [ 'errors', 'warnings', 'files_checked', 'files_not_checked', 'php_bytes', 'components_checked', 'components_with_errors', 'duration_s' ];
 	const ESTIMATE_INTS = [ 'php_files', 'php_bytes', 'components', 'estimated_seconds', 'estimated_seconds_low', 'estimated_seconds_high' ];
-	// --format=json prints only the documented keys (INTERFACE.md), in this order.
+	// --format=json prints only these keys, in this order (EasyDash validates them).
 	const SUMMARY_KEYS  = [
 		'v',
 		'status',
@@ -76,6 +76,8 @@ class Site_PHP_Compat {
 	const INPUT_KEYS    = [ 'calibration_bytes', 'calibration_seconds', 'startup_seconds', 'bytes_per_second', 'batches', 'seconds_per_batch', 'cpus', 'load_average_1m', 'low_factor', 'high_factor' ];
 	// File names and messages from the scanned code can hold invalid UTF-8.
 	const JSON_UTF8 = JSON_INVALID_UTF8_SUBSTITUTE; // phpcs:ignore PHPCompatibility.PHP.NewConstants.json_invalid_utf8_substituteFound -- PHP 7.2+; EE needs 7.4.
+	// C0 controls and DEL, for a character class.
+	const CONTROL_CHARS = '\x00-\x1F\x7F';
 	// C1 controls, bidi and zero-width characters: a terminal acts on them or they disguise text.
 	const UNSAFE_CHARS = '\x{80}-\x{9F}\x{061C}\x{200B}-\x{200F}\x{2028}-\x{202E}\x{2060}-\x{2069}\x{FEFF}';
 	// A public directory as EE stores it (the pattern Cloner checks site_container_fs_path with).
@@ -116,6 +118,9 @@ class Site_PHP_Compat {
 
 	// tool_error detail when the site's directory or app/ is missing or its lock can't be opened (a delete in progress).
 	const SITE_GONE = 'the site is being deleted or its files are missing';
+
+	// Label of an estimate's container naming its site, so --cancel and delete find it.
+	const ESTIMATE_SITE_LABEL = 'ee-php-compat-estimate-site';
 
 	/** EE's own config/nginx/custom/admin-tools.conf (site-type-wp templates/config/nginx/admin-tools.conf.mustache). */
 	const ADMIN_TOOLS_CONF = "# ee-admin pages\nlocation ^~ /ee-admin/ {\n\troot /var/www/htdocs ;\n\tlocation ~ \\.php$ {\n\t\ttry_files \$uri =404;\n\t\tinclude fastcgi_params;\n\t\tfastcgi_pass php;\n\t}\n}\n";
@@ -389,7 +394,7 @@ class Site_PHP_Compat {
 		if ( '' === $output || '/' !== $output[0] ) {
 			EE::error( '--output must be an absolute path.' );
 		}
-		if ( ! preg_match( '//u', $output ) || preg_match( '/[\x00-\x1F\x7F' . self::UNSAFE_CHARS . ']/u', $output ) ) {
+		if ( ! preg_match( '//u', $output ) || preg_match( '/[' . self::CONTROL_CHARS . self::UNSAFE_CHARS . ']/u', $output ) ) {
 			EE::error( '--output must not contain control characters.' );
 		}
 		$name = basename( $output );
@@ -456,7 +461,7 @@ class Site_PHP_Compat {
 		}
 
 		// From here until cleanup() confirms it is gone, /out may be in use by this container.
-		$name                   = 'ee-php-compat-' . $this->site;
+		$name                   = $this->container_name();
 		$this->active_container = $name;
 		$run                    = $this->docker( $this->docker_run_args( 'scan', $image, $site_data, $code, $out, $timeout ), $timeout + self::PROCESS_MARGIN, true );
 		if ( $run['timed_out'] ) {
@@ -658,10 +663,17 @@ class Site_PHP_Compat {
 	}
 
 	/**
+	 * @return string The scan container's name; core's `ee cli update` looks for it too.
+	 */
+	protected function container_name() {
+		return 'ee-php-compat-' . $this->site;
+	}
+
+	/**
 	 * @return array|null busy or tool_error result, or null when no container of the site's name is left.
 	 */
 	protected function remove_leftover_container() {
-		$name   = 'ee-php-compat-' . $this->site;
+		$name   = $this->container_name();
 		$status = $this->container_status( $name );
 		if ( 'running' === $status ) {
 			return $this->doc( 'busy' );
@@ -697,14 +709,13 @@ class Site_PHP_Compat {
 		if ( is_string( $config ) ) {
 			return $config;
 		}
-		$hint = $this->read_nginx_roots( $site_data );
-		$rel  = ltrim( substr( $hint, strlen( '/var/www' ) ), '/' );
+		$hint            = $this->read_nginx_roots( $site_data );
+		$rel             = (string) self::www_rel( $hint );
 		$this->scan_path = $hint;
 		if ( 'wp' === $site_data->site_type ) {
 			$this->scan_path = '/var/www/' . $this->wordpress_hint( $code, $rel );
 		}
-		$served_rel                = ltrim( substr( $this->served, strlen( '/var/www' ) ), '/' );
-		$this->old_releases_served = '' !== $this->served && self::release_layout_in( $code, $served_rel );
+		$this->old_releases_served = '' !== $this->served && self::release_layout_in( $code, (string) self::www_rel( $this->served ) );
 		$this->read_php_settings( $config );
 		if ( $this->settings ) {
 			$this->ee_entries[] = [ 'PHP settings', 'PHP settings this check can\'t follow: ' . implode( '; ', array_unique( $this->settings ) ) ];
@@ -797,7 +808,8 @@ class Site_PHP_Compat {
 		if ( self::ee_newrelic_mount( $mount ) && $this->ee_plain_volume( $mount['Name'] ) ) {
 			return;
 		}
-		$below = 0 === strpos( $dst, '/var/www/' );
+		$rel   = self::www_rel( $dst );
+		$below = null !== $rel;
 		// EE's own admin tools, not the site's code.
 		if ( '/var/www/htdocs/ee-admin' === $dst && false !== $real && realpath( EE_ROOT_DIR . '/admin-tools' ) === $real ) {
 			return;
@@ -808,13 +820,13 @@ class Site_PHP_Compat {
 			return;
 		}
 		// --mount takes CSV, and the scanner refuses a control character in COMPAT_EXTRA_ROOTS.
-		if ( '' === $src || false === $real || preg_match( '/[,"\x00-\x1F\x7F]/', $src . $dst ) ) {
+		if ( '' === $src || false === $real || preg_match( '/[,"' . self::CONTROL_CHARS . ']/', $src . $dst ) ) {
 			$this->ee_entries[] = $unbindable;
 			return;
 		}
 		if ( $below ) {
 			// The scanner's /var/www is read-only, so the mount point must already be there.
-			if ( null === self::resolve_in( $code, substr( $dst, strlen( '/var/www/' ) ) ) ) {
+			if ( null === self::resolve_in( $code, $rel ) ) {
 				$this->ee_entries[] = $unbindable;
 				return;
 			}
@@ -1039,7 +1051,7 @@ class Site_PHP_Compat {
 			case 'auto_append_file':
 			case 'opcache.preload':
 				// A control character can't go into the scanner's environment.
-				if ( ! $off && preg_match( '/[\x00-\x1F\x7F]/', $value ) ) {
+				if ( ! $off && preg_match( '/[' . self::CONTROL_CHARS . ']/', $value ) ) {
 					$this->settings[] = "a $key value this check can't pass to the scanner";
 				} elseif ( ! $off ) {
 					$this->require[] = $value;
@@ -1110,13 +1122,14 @@ class Site_PHP_Compat {
 	 * @return string The scan path hint: main.conf's first root, or the record's public directory.
 	 */
 	protected function read_nginx_roots( $site_data ) {
-		$roots  = [];
-		$first  = null;
-		$dir    = $site_data->site_fs_path . '/config/nginx';
-		$files = self::files_under( $dir, $outside );
-		$sure  = ! $outside;
+		$roots     = [];
+		$first     = null;
+		$dir       = $site_data->site_fs_path . '/config/nginx';
+		$files     = self::files_under( $dir, $outside );
+		$sure      = ! $outside;
+		$main_conf = realpath( "$dir/conf.d/main.conf" );
 		foreach ( $files as $file ) {
-			$main = realpath( "$dir/conf.d/main.conf" ) === $file;
+			$main = $main_conf === $file;
 			if ( 'admin-tools.conf' === basename( $file ) && self::is_ee_admin_tools( $file ) ) {
 				continue;
 			}
@@ -1125,9 +1138,9 @@ class Site_PHP_Compat {
 				function ( $line ) use ( &$roots, &$sure, &$first, $main ) {
 					foreach ( self::nginx_paths( $line ) as list( $directive, $value ) ) {
 						$path   = null === $value ? null : self::container_path( $value );
-						$in_www = null !== $path && ( '/var/www' === $path || 0 === strpos( $path, '/var/www/' ) );
+						$in_www = null !== $path && null !== self::www_rel( $path );
 						// The scanner refuses a `.` or `..` segment or a control character in COMPAT_SERVED.
-						$plain = $in_www && ! preg_match( '#/\.\.?(?:/|$)|[\x00-\x1F\x7F]#', $path );
+						$plain = $in_www && ! preg_match( '#/\.\.?(?:/|$)|[' . self::CONTROL_CHARS . ']#', $path );
 						if ( null === $value || false !== strpos( $value, '$' ) || ( $in_www && ( 'alias' === $directive || ! $plain ) ) ) {
 							$sure = false;
 						} elseif ( $in_www ) {
@@ -1246,6 +1259,19 @@ class Site_PHP_Compat {
 	}
 
 	/**
+	 * @param string $path Container path.
+	 *
+	 * @return string|null It relative to /var/www ('' for /var/www itself), or null outside /var/www.
+	 */
+	protected static function www_rel( $path ) {
+		if ( '/var/www' === $path ) {
+			return '';
+		}
+
+		return 0 === strpos( $path, '/var/www/' ) ? substr( $path, strlen( '/var/www/' ) ) : null;
+	}
+
+	/**
 	 * @param string $path Container path as nginx or EE's record writes it.
 	 *
 	 * @return string It with repeated and trailing slashes dropped.
@@ -1271,7 +1297,7 @@ class Site_PHP_Compat {
 		foreach ( [ $rel, null === $loader ? null : "$rel/$loader", "$rel/current", $cli ] as $candidate ) {
 			$candidate = null === $candidate ? '' : trim( preg_replace( [ '#/+#', '#(?<=^|/)\./#' ], [ '/', '' ], $candidate ), '/' );
 			// The scanner refuses a path with `.` or `..` segments or control characters; such a root is judged as another install.
-			if ( '' === $candidate || preg_match( '#(?:^|/)\.\.?(?:/|$)|[\x00-\x1F]#', $candidate ) ) {
+			if ( '' === $candidate || preg_match( '#(?:^|/)\.\.?(?:/|$)|[' . self::CONTROL_CHARS . ']#', $candidate ) ) {
 				continue;
 			}
 			$settings = self::resolve_in( $code, "$candidate/wp-settings.php" );
@@ -1328,7 +1354,7 @@ class Site_PHP_Compat {
 			return "$dir/$path";
 		}
 
-		return 0 === strpos( $path . '/', '/var/www/' ) ? ltrim( substr( $path, strlen( '/var/www' ) ), '/' ) : null;
+		return self::www_rel( rtrim( $path, '/' ) );
 	}
 
 	/**
@@ -1413,7 +1439,7 @@ class Site_PHP_Compat {
 	 * @return bool|string Whether one of them was running, or why one couldn't be removed.
 	 */
 	protected function stop_containers() {
-		$name   = 'ee-php-compat-' . $this->site;
+		$name   = $this->container_name();
 		$status = $this->container_status( $name );
 		if ( 'unknown' === $status ) {
 			return "could not check the container $name";
@@ -1422,7 +1448,7 @@ class Site_PHP_Compat {
 			return "could not remove the container $name";
 		}
 		$running = 'running' === $status;
-		$label   = 'label=ee-php-compat-estimate-site=' . $this->site;
+		$label   = 'label=' . self::ESTIMATE_SITE_LABEL . '=' . $this->site;
 		$ps      = $this->docker( [ 'docker', 'ps', '-a', '--no-trunc', '--format', '{{.ID}} {{.State}}', '--filter', $label ], 60 );
 		if ( 0 !== $ps['code'] ) {
 			return 'could not list the estimate containers of the site';
@@ -1552,7 +1578,7 @@ class Site_PHP_Compat {
 		// No --sig-proxy: the client would pass a terminal's SIGHUP on to the scanner.
 		$args = [ 'docker', 'run', '--rm', '--init', '--sig-proxy=false' ];
 		if ( 'scan' === $mode ) {
-			array_push( $args, '--name', 'ee-php-compat-' . $this->site );
+			array_push( $args, '--name', $this->container_name() );
 		}
 		// No log driver: the daemon would otherwise keep its own unbounded copy of the container's stdout.
 		array_push(
@@ -1573,7 +1599,7 @@ class Site_PHP_Compat {
 		);
 		if ( 'estimate' === $mode && null !== $this->estimate_label ) {
 			// The site label lets `ee site delete` stop a running estimate.
-			array_push( $args, '--label', 'ee-php-compat-estimate=' . $this->estimate_label, '--label', 'ee-php-compat-estimate-site=' . $this->site );
+			array_push( $args, '--label', 'ee-php-compat-estimate=' . $this->estimate_label, '--label', self::ESTIMATE_SITE_LABEL . '=' . $this->site );
 		}
 		if ( 'estimate' === $mode ) {
 			// The byte model misses PHPCS's per-file cost on dense many-file trees (2x short seen): more per batch, wider top end.
@@ -1684,19 +1710,14 @@ class Site_PHP_Compat {
 	/**
 	 * Resolves a path under app/ as the container sees it: a link to /var/www/... points into app/.
 	 *
-	 * @param string      $code Real path of the site's app/.
-	 * @param string      $rel  Path relative to app/.
-	 * @param string|null $why  Set on null: 'missing' (the kernel can't follow it either) or 'escape' (it leaves app/, or
-	 *                          this can't tell where the kernel would take it, e.g. /var/www/../www or /proc/self/root).
-	 * @param array|null  $passed Set to the links passed on the way (their real-location host paths).
+	 * @param string $code Real path of the site's app/.
+	 * @param string $rel  Path relative to app/.
 	 *
 	 * @return string|null Real host path inside app/, or null when it doesn't exist or leaves app/.
 	 */
-	public static function resolve_in( $code, $rel, &$why = null, &$passed = null ) {
-		$why    = 'escape';
-		$passed = [];
+	public static function resolve_in( $code, $rel ) {
 		// Path text from the site's files: a NUL or another control character is never a real path here.
-		if ( preg_match( '/[\x00-\x1F\x7F]/', $rel ) ) {
+		if ( preg_match( '/[' . self::CONTROL_CHARS . ']/', $rel ) ) {
 			return null;
 		}
 		$todo = array_values( array_filter( explode( '/', $rel ), 'strlen' ) );
@@ -1716,34 +1737,29 @@ class Site_PHP_Compat {
 			}
 			$path = $code . '/' . implode( '/', array_merge( $done, [ $part ] ) );
 			if ( is_link( $path ) ) {
-				$passed[] = $path;
 				$target = readlink( $path );
 				if ( ++$hops > 40 ) {
-					$why = 'missing';
 					return null;
 				}
-				if ( false === $target || preg_match( '/[\x00-\x1F\x7F]/', $target ) ) {
+				if ( false === $target || preg_match( '/[' . self::CONTROL_CHARS . ']/', $target ) ) {
 					return null;
 				}
 				if ( '/' === substr( $target, 0, 1 ) ) {
-					if ( 0 !== strpos( $target . '/', '/var/www/' ) ) {
+					$target = self::www_rel( rtrim( $target, '/' ) );
+					if ( null === $target ) {
 						return null;
 					}
-					$done   = [];
-					$target = substr( $target, strlen( '/var/www' ) );
+					$done = [];
 				}
 				$todo = array_merge( array_values( array_filter( explode( '/', $target ), 'strlen' ) ), $todo );
 				continue;
 			}
 			// Only a directory can be passed through, as in the kernel.
 			if ( ! file_exists( $path ) || ( $todo && ! is_dir( $path ) ) ) {
-				$why = 'missing';
 				return null;
 			}
 			$done[] = $part;
 		}
-
-		$why = null;
 
 		return rtrim( $code . '/' . implode( '/', $done ), '/' );
 	}
@@ -2653,9 +2669,9 @@ class Site_PHP_Compat {
 	 * @return string The same place under the site's app/, cleaned; a path outside /var/www as it is.
 	 */
 	protected function host_name( $path ) {
-		$name = 0 === strpos( $path, '/var/www/' ) ? $this->app_path . substr( $path, strlen( '/var/www/' ) ) : $path;
+		$rel = self::www_rel( $path );
 
-		return self::clean( $name );
+		return self::clean( null === $rel ? $path : $this->app_path . $rel );
 	}
 
 	/**
@@ -2976,18 +2992,6 @@ class Site_PHP_Compat {
 		}
 
 		return $detail;
-	}
-
-	/**
-	 * The table, for tests and callers that want one string.
-	 *
-	 * @param array      $doc    Summary.
-	 * @param array|null $report Decoded report (ok only).
-	 *
-	 * @return string
-	 */
-	protected function table( array $doc, $report ) {
-		return implode( "\n", iterator_to_array( $this->table_lines( $doc, $report ), false ) ) . "\n";
 	}
 
 	/**
@@ -3316,7 +3320,7 @@ class Site_PHP_Compat {
 			$text = preg_replace( '/[\x80-\xFF]/', '?', $text );
 		}
 
-		return preg_replace( '/[\x00-\x1F\x7F' . self::UNSAFE_CHARS . ']/u', '?', $text );
+		return preg_replace( '/[' . self::CONTROL_CHARS . self::UNSAFE_CHARS . ']/u', '?', $text );
 	}
 
 	/**
