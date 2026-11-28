@@ -963,13 +963,16 @@ class Site_PHP_Compat {
 	 * @param bool   $quoted Whether it was quoted.
 	 */
 	protected function php_setting( $key, $value, $quoted ) {
-		// Only bare keywords mean "nothing" to PHP; a quoted "none" is a file name.
-		$off = '' === $value || ! $quoted && in_array( strtolower( $value ), [ 'none', 'off', 'no', 'false', 'null', '0' ], true );
+		// Only bare keywords mean "nothing" to PHP; a quoted "none", or 0, is a file name.
+		$off = '' === $value || ! $quoted && in_array( strtolower( $value ), [ 'none', 'off', 'no', 'false', 'null' ], true );
 		switch ( $key ) {
 			case 'auto_prepend_file':
 			case 'auto_append_file':
 			case 'opcache.preload':
-				if ( ! $off ) {
+				// A control character can't go into the scanner's environment.
+				if ( ! $off && preg_match( '/[\x00-\x1F\x7F]/', $value ) ) {
+					$this->settings[] = "a $key value this check can't pass to the scanner";
+				} elseif ( ! $off ) {
 					$this->require[] = $value;
 				}
 				return;
@@ -981,14 +984,18 @@ class Site_PHP_Compat {
 				$changed = ! in_array( $value, [ 'etc/php-fpm.d/*.conf', '/usr/local/etc/php-fpm.d/*.conf' ], true );
 				break;
 			case 'security.limit_extensions':
+				// Empty lets PHP-FPM run any extension.
 				$extensions = preg_split( '/\s+/', strtolower( $value ), -1, PREG_SPLIT_NO_EMPTY );
-				$changed    = (bool) array_diff( $extensions, preg_filter( '/^/', '.', self::CODE_EXTENSIONS ) );
+				$changed    = ! $extensions || array_diff( $extensions, preg_filter( '/^/', '.', self::CODE_EXTENSIONS ) );
 				break;
 			case 'user_ini.filename':
 				$changed = '' !== $value && '.user.ini' !== $value;
 				break;
+			case 'zend.multibyte':
+				$changed = ! $off && '0' !== $value;
+				break;
 			default:
-				// zend.multibyte and zend.script_encoding change how PHP reads the source.
+				// zend.script_encoding changes how PHP reads the source.
 				$changed = ! $off;
 		}
 		if ( $changed ) {
@@ -1031,10 +1038,11 @@ class Site_PHP_Compat {
 	 */
 	protected function read_nginx_roots( $site_data ) {
 		$roots  = [];
-		$sure   = true;
 		$first  = null;
 		$dir    = $site_data->site_fs_path . '/config/nginx';
-		foreach ( self::files_under( $dir ) as $file ) {
+		$files = self::files_under( $dir, $outside );
+		$sure  = ! $outside;
+		foreach ( $files as $file ) {
 			$main = realpath( "$dir/conf.d/main.conf" ) === $file;
 			if ( 'admin-tools.conf' === basename( $file ) && self::is_ee_admin_tools( $file ) ) {
 				continue;
@@ -1043,12 +1051,15 @@ class Site_PHP_Compat {
 				$file,
 				function ( $line ) use ( &$roots, &$sure, &$first, $main ) {
 					foreach ( self::nginx_paths( $line ) as list( $directive, $value ) ) {
-						$in_www = null !== $value && ( '/var/www' === $value || 0 === strpos( $value, '/var/www/' ) );
-						if ( null === $value || false !== strpos( $value, '$' ) || ( 'alias' === $directive && $in_www ) ) {
+						$path   = null === $value ? null : self::container_path( $value );
+						$in_www = null !== $path && ( '/var/www' === $path || 0 === strpos( $path, '/var/www/' ) );
+						// The scanner refuses a `.` or `..` segment or a control character in COMPAT_SERVED.
+						$plain = $in_www && ! preg_match( '#/\.\.?(?:/|$)|[\x00-\x1F\x7F]#', $path );
+						if ( null === $value || false !== strpos( $value, '$' ) || ( $in_www && ( 'alias' === $directive || ! $plain ) ) ) {
 							$sure = false;
 						} elseif ( $in_www ) {
-							$roots[ self::container_path( $value ) ] = true;
-							$first = $main && null === $first ? self::container_path( $value ) : $first;
+							$roots[ $path ] = true;
+							$first          = $main && null === $first ? $path : $first;
 						}
 					}
 				}
@@ -1114,31 +1125,36 @@ class Site_PHP_Compat {
 	}
 
 	/**
-	 * @param string $dir Directory.
+	 * @param string $dir     Directory.
+	 * @param bool   $outside Set when a link below it leads out of it; that target is the nginx container's, not the host's.
 	 *
-	 * @return string[] Real paths of the regular files below it, links followed, each directory once.
+	 * @return string[] Real paths of the regular files below it, links inside it followed, each directory once.
 	 */
-	protected static function files_under( $dir ) {
-		$files = [];
-		$seen  = [];
-		$todo  = [ $dir ];
+	protected static function files_under( $dir, &$outside = false ) {
+		$base    = realpath( $dir );
+		$files   = [];
+		$todo    = false === $base ? [] : [ $base ];
+		$seen    = [];
+		$outside = false;
 		while ( $todo ) {
-			$real = realpath( array_pop( $todo ) );
-			if ( false === $real || isset( $seen[ $real ] ) ) {
-				continue;
-			}
-			$seen[ $real ] = true;
-			foreach ( self::entries( $real ) as $name ) {
-				$path = "$real/$name";
-				if ( is_dir( $path ) ) {
-					$todo[] = $path;
-				} elseif ( is_file( $path ) ) {
-					$files[] = realpath( $path );
+			$current = array_pop( $todo );
+			foreach ( self::entries( $current ) as $name ) {
+				$real = realpath( "$current/$name" );
+				if ( false === $real || isset( $seen[ $real ] ) ) {
+					continue;
+				}
+				$seen[ $real ] = true;
+				if ( $real !== $base && 0 !== strpos( $real, "$base/" ) ) {
+					$outside = true;
+				} elseif ( is_dir( $real ) ) {
+					$todo[] = $real;
+				} elseif ( is_file( $real ) ) {
+					$files[] = $real;
 				}
 			}
 		}
 
-		return array_values( array_unique( $files ) );
+		return $files;
 	}
 
 	/**
